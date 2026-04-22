@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sourcery</title>
+    <link rel="icon" type="image/png" href="./favicon.png?v=2" />
+    <link rel="apple-touch-icon" href="./favicon.png?v=2" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell" id="app-shell">
+      <aside class="activity-bar" aria-label="Primary navigation">
+        <div class="activity-bar__stack">
+          <button type="button" class="activity-button" data-view="graph" title="Graph">
+            <span class="activity-button__glyph" aria-hidden="true">◎</span>
+            <span class="activity-button__label">Graph</span>
+          </button>
+        </div>
+        <div class="activity-bar__footer">
+          <button
+            type="button"
+            class="activity-button activity-button--utility"
+            id="toggle-explorer-button"
+            title="Collapse explorer"
+          >
+            <span class="activity-button__glyph" id="toggle-explorer-glyph" aria-hidden="true">⇤</span>
+            <span class="activity-button__label">Explorer</span>
+          </button>
+          <span class="activity-bar__status" aria-hidden="true">●</span>
+        </div>
+      </aside>
+
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar__header">
+          <div>
+            <p class="eyebrow">Explorer</p>
+            <h1>Vault</h1>
+          </div>
+          <div class="sidebar__header-actions">
+            <button type="button" class="icon-button icon-button--secondary" id="refresh-button" title="Обновить">
+              ↻
+            </button>
+            <button type="button" class="icon-button icon-button--secondary" id="new-folder-button" title="Новая папка">
+              ▣
+            </button>
+            <button type="button" class="icon-button" id="new-note-button" title="Новая заметка">
+              +
+            </button>
+          </div>
+        </div>
+
+        <label class="search-field">
+          <span>Поиск</span>
+          <input
+            type="search"
+            id="search-input"
+            placeholder="Заголовок или текст"
+            autocomplete="off"
+          />
+        </label>
+        <div class="folders-panel" hidden>
+          <div class="notes-panel__header">
+            <span>Папки</span>
+            <span class="notes-panel__count" id="folder-count">0</span>
+          </div>
+          <div class="folder-visibility-switcher">
+            <button type="button" class="switch-button is-active" id="show-all-folders-button">Show all</button>
+            <button type="button" class="switch-button" id="show-selected-folder-button">Selected only</button>
+          </div>
+          <div class="folder-selection-bar">
+            <span class="folder-selection-bar__path" id="folder-selection-path">Root</span>
+            <div class="folder-selection-bar__actions">
+              <button type="button" class="secondary-button" id="rename-folder-button">Rename</button>
+              <button type="button" class="secondary-button" id="delete-folder-button">Delete empty</button>
+            </div>
+          </div>
+          <ul class="folder-list" id="folder-list"></ul>
+        </div>
+
+        <div class="notes-panel">
+          <div class="notes-panel__header">
+            <span>Заметки</span>
+            <span class="notes-panel__count" id="note-count">0</span>
+          </div>
+          <ul class="note-list" id="note-list"></ul>
+        </div>
+      </aside>
+
+      <button
+        type="button"
+        class="sidebar-resizer"
+        id="sidebar-resizer"
+        aria-label="Resize explorer"
+        title="Resize explorer"
+      ></button>
+
+      <main class="workspace">
+        <header class="workspace__appbar">
+          <div class="workspace__titleblock">
+            <div class="workspace__brand">
+              <img class="workspace__logo" src="./image.png" alt="Sourcery logo" />
+              <div class="workspace__brand-copy">
+                <p class="eyebrow">Knowledge Workspace</p>
+                <strong class="workspace__title">Sourcery</strong>
+              </div>
+            </div>
+          </div>
+          <div class="toolbar__meta">
+            <span class="status-pill" id="save-state">Markdown vault</span>
+            <span class="status-text" id="note-meta">0 слов</span>
+          </div>
+        </header>
+
+        <nav class="workspace__tabs" aria-label="Workspace tabs">
+          <div class="workspace-tabs__rail" id="workspace-tab-list">
+            <div class="workspace-tabs__empty">
+              <span>No tabs yet</span>
+              <span>Open the current note to keep it in the workspace strip.</span>
+            </div>
+          </div>
+          <div class="workspace-tabs__controls">
+            <div class="workspace-tabs__active-state" id="workspace-active-tab-state">No active note</div>
+            <span class="workspace-tabs__view-badge" id="workspace-view-badge">Split</span>
+            <div class="workspace-view-switcher" aria-label="Workspace view">
+              <button type="button" class="workspace-view-button" data-view="split" title="Workspace">
+                <span class="workspace-view-button__glyph" aria-hidden="true">◫</span>
+              </button>
+              <button type="button" class="workspace-view-button" data-view="editor" title="Editor">
+                <span class="workspace-view-button__glyph" aria-hidden="true">✎</span>
+              </button>
+              <button type="button" class="workspace-view-button" data-view="preview" title="Preview">
+                <span class="workspace-view-button__glyph" aria-hidden="true">≣</span>
+              </button>
+            </div>
+          </div>
+        </nav>
+
+        <section class="editor-layout" id="editor-layout">
+          <article class="pane pane--editor" id="editor-pane">
+            <div class="pane__header">
+              <div class="title-field">
+                <input
+                  class="title-input"
+                  id="note-title"
+                  type="text"
+                  placeholder="Название заметки"
+                  autocomplete="off"
+                />
+                <p class="title-hint" id="title-hint" hidden></p>
+                <div class="note-meta-row">
+                  <span class="note-path-badge" id="note-path-badge">Root</span>
+                  <button type="button" class="secondary-button note-move-button" id="note-move-button">Move</button>
+                </div>
+                <select class="note-folder-select" id="note-folder-select" hidden></select>
+                <div class="note-tags" id="note-tags" hidden></div>
+              </div>
+              <button type="button" class="danger-button" id="delete-button">Удалить</button>
+            </div>
+            <textarea
+              id="note-editor"
+              class="editor-textarea"
+              placeholder="# Начните писать..."
+              spellcheck="false"
+            ></textarea>
+          </article>
+
+          <article class="pane pane--preview" id="preview-pane">
+            <div class="pane__header pane__header--preview">
+              <div class="note-context" id="note-context" hidden>
+                <div class="context-group">
+                  <p class="context-label">Backlinks</p>
+                  <div class="context-links" id="note-backlinks"></div>
+                </div>
+              </div>
+            </div>
+            <div class="markdown-preview" id="note-preview"></div>
+          </article>
+
+          <article class="pane pane--graph" id="graph-pane">
+            <div class="pane__header pane__header--graph">
+              <div>
+                <p class="eyebrow">Knowledge Graph</p>
+                <h2>Graph View</h2>
+              </div>
+              <div class="graph-toolbar">
+                <div class="graph-toolbar__group">
+                  <button type="button" class="switch-button is-active" id="graph-global-button">Global</button>
+                  <button type="button" class="switch-button" id="graph-local-button">Local</button>
+                </div>
+                <div class="graph-toolbar__group">
+                  <label class="graph-color-field">
+                    <span>Color</span>
+                    <select id="graph-color-mode">
+                      <option value="none">None</option>
+                      <option value="folder">Folder</option>
+                      <option value="tag">Tag</option>
+                      <option value="cluster">Cluster</option>
+                    </select>
+                  </label>
+                  <button type="button" class="switch-button" id="graph-folder-scope-button">Scope folder</button>
+                  <button type="button" class="switch-button" id="graph-existing-only-button">Existing only</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="graph-layout">
+              <section class="graph-canvas-panel">
+                <div class="graph-stats" id="graph-stats"></div>
+                <div class="graph-legend" id="graph-legend"></div>
+                <div class="graph-canvas-wrap">
+                  <div class="graph-canvas-controls">
+                    <button type="button" class="switch-button" id="graph-center-view-button">Center</button>
+                    <button type="button" class="switch-button" id="graph-reset-view-button">Reset view</button>
+                    <button type="button" class="switch-button" id="graph-toggle-sidebar-button">Hide panel</button>
+                  </div>
+                  <svg class="graph-canvas" id="graph-canvas" viewBox="0 0 1000 680" preserveAspectRatio="xMidYMid meet"></svg>
+                  <div class="graph-empty-state" id="graph-empty-state" hidden></div>
+                </div>
+              </section>
+
+              <aside class="graph-insights">
+                <section class="graph-insight-card">
+                  <div class="notes-panel__header">
+                    <span>Path finder</span>
+                  </div>
+                  <div class="graph-path-form">
+                    <label class="graph-path-field">
+                      <span>From</span>
+                      <select id="graph-path-from"></select>
+                    </label>
+                    <label class="graph-path-field">
+                      <span>To</span>
+                      <select id="graph-path-to"></select>
+                    </label>
+                    <div class="graph-path-actions">
+                      <button type="button" class="secondary-button" id="graph-path-current-button">Current</button>
+                      <button type="button" class="secondary-button" id="graph-path-swap-button">Swap</button>
+                      <button type="button" class="secondary-button" id="graph-path-find-button">Find path</button>
+                    </div>
+                  </div>
+                  <div class="graph-insight-list" id="graph-path-result"></div>
+                </section>
+
+                <section class="graph-insight-card">
+                  <div class="notes-panel__header">
+                    <span>Top linked</span>
+                  </div>
+                  <div class="graph-insight-list" id="graph-top-linked"></div>
+                </section>
+
+                <section class="graph-insight-card">
+                  <div class="notes-panel__header">
+                    <span>Hubs</span>
+                  </div>
+                  <div class="graph-insight-list" id="graph-hubs"></div>
+                </section>
+
+                <section class="graph-insight-card">
+                  <div class="notes-panel__header">
+                    <span>Bridges</span>
+                  </div>
+                  <div class="graph-insight-list" id="graph-bridges"></div>
+                </section>
+
+                <section class="graph-insight-card">
+                  <div class="notes-panel__header">
+                    <span>Broken links</span>
+                  </div>
+                  <div class="graph-insight-list" id="graph-broken-links"></div>
+                </section>
+
+                <section class="graph-insight-card">
+                  <div class="notes-panel__header">
+                    <span>Orphans</span>
+                  </div>
+                  <div class="graph-insight-list" id="graph-orphans"></div>
+                </section>
+              </aside>
+            </div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <div class="graph-node-menu" id="graph-node-menu" hidden></div>
+    <div class="graph-node-menu" id="explorer-context-menu" hidden></div>
+
+    <template id="empty-note-template">
+      <div class="empty-state">
+        <p class="empty-state__eyebrow">Vault пуст</p>
+        <h2>Создайте первую заметку</h2>
+        <p>Новая заметка будет сохранена как отдельный markdown-файл в папке vault.</p>
+      </div>
+    </template>
+
+    <div class="confirm-dialog" id="confirm-dialog" hidden>
+      <div class="confirm-dialog__backdrop" id="confirm-dialog-backdrop"></div>
+      <div
+        class="confirm-dialog__card"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-dialog-title"
+        aria-describedby="confirm-dialog-description"
+      >
+        <p class="confirm-dialog__eyebrow">Confirmation</p>
+        <h2 class="confirm-dialog__title" id="confirm-dialog-title">Подтвердите действие</h2>
+        <p class="confirm-dialog__description" id="confirm-dialog-description">
+          Это действие нельзя отменить.
+        </p>
+        <div class="confirm-dialog__actions">
+          <button type="button" class="secondary-button" id="confirm-dialog-cancel">Отмена</button>
+          <button type="button" class="danger-button" id="confirm-dialog-confirm">Удалить</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./dist/app.js"></script>
+  </body>
+</html>
