@@ -889,7 +889,9 @@ body.is-resizing-sidebar .sidebar-resizer::before {
 }
 
 .workspace__appbar {
-  display: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 0 14px 0 16px;
   border-bottom: 1px solid var(--border);
   background:

@@ -1,4 +1,11 @@
 import { RequestError } from "./compat/obsidian/app.js";
+import { SourceryApiClient, requestJson as fetchJson } from "./frontend/api-client.js";
+import {
+  didEverySaveSucceed,
+  resolveMemorySaveScopes,
+  shouldSkipMemorySave,
+  type MemorySaveScope,
+} from "./frontend/save-coordinator.js";
 import type {
   GraphBrokenLink,
   GraphBridgeNote,
@@ -12,7 +19,6 @@ import type {
 import type { AppMemoryDocument } from "./core/memory/types.js";
 import type { WorkspaceConnection, WorkspaceConnectionKind } from "./core/workspace/session-types.js";
 import type { WorkspaceFolder, WorkspaceNote } from "./core/workspace/types.js";
-import { HttpWorkspaceClient } from "./core/workspace/http-workspace-client.js";
 import { matchesNoteQuery } from "./core/wiki/query.js";
 import { WikiSDK } from "./core/wiki/wiki-sdk.js";
 
@@ -313,7 +319,7 @@ const EXPLORER_WIDTH_STORAGE_KEY = "sourcery:explorer-width";
 const EXPLORER_COLLAPSED_STORAGE_KEY = "sourcery:explorer-collapsed";
 const LOCALE_STORAGE_KEY = "sourcery:locale";
 const ACTIVE_CONNECTION_STORAGE_KEY = "sourcery:active-connection";
-const workspaceClient = new HttpWorkspaceClient();
+const apiClient = new SourceryApiClient({ getActiveConnectionId });
 const wiki = new WikiSDK();
 const TRANSLATIONS: Record<Locale, Record<string, string>> = {
   ru: {
@@ -3682,8 +3688,8 @@ async function reloadVault(
     }
 
     const [notes, folders] = await Promise.all([
-      workspaceClient.listNotes({ connectionId: activeConnectionId }),
-      workspaceClient.listFolders({ connectionId: activeConnectionId }),
+      apiClient.listNotes(),
+      apiClient.listFolders(),
     ]);
     state.vault.notes = notes;
     state.vault.folders = folders;
@@ -3776,9 +3782,8 @@ async function handleCreateFolder(): Promise<void> {
   }
 
   try {
-    const connectionId = getActiveConnectionId();
-    const folder = await workspaceClient.createFolder({ path: nextPath }, { connectionId });
-    state.vault.folders = await workspaceClient.listFolders({ connectionId });
+    const folder = await apiClient.createFolder(nextPath);
+    state.vault.folders = await apiClient.listFolders();
     state.vault.selectedFolderPath = folder.path;
     expandFolderAncestors(folder.path);
     render();
@@ -3804,7 +3809,7 @@ async function handleRenameSelectedFolder(): Promise<void> {
 
   try {
     setStatus(t("folders.rename"));
-    await workspaceClient.renameFolder(currentPath, { nextPath }, { connectionId: getActiveConnectionId() });
+    await apiClient.renameFolder(currentPath, nextPath);
     remapFolderState(currentPath, nextPath);
     await reloadVault(preferredNoteId);
     flashStatus(t("status.folderRenamed", { path: nextPath }));
@@ -3835,7 +3840,7 @@ async function handleDeleteSelectedFolder(): Promise<void> {
 
   try {
     setStatus(t("common.delete"));
-    await workspaceClient.deleteFolder(currentPath, { connectionId: getActiveConnectionId() });
+    await apiClient.deleteFolder(currentPath);
     state.vault.selectedFolderPath = getParentFolderPath(currentPath);
     state.vault.collapsedFolderPaths = state.vault.collapsedFolderPaths
       .filter((item) => item !== getFolderCollapseKey(currentPath));
@@ -6053,18 +6058,7 @@ async function maybeReloadAfterExternalChanges(): Promise<void> {
 
 async function safeGetWorkspaceState(): Promise<{ revision: number; changedAt: string } | null> {
   try {
-    const activeConnectionId = getActiveConnectionId();
-    const suffix = activeConnectionId ? `?connectionId=${encodeURIComponent(activeConnectionId)}` : "";
-    const snapshot = await requestJson<{
-      revision: number;
-      changedAt: string;
-      connections?: Array<{ connectionId: string; revision: number; changedAt: string }>;
-    }>(`/api/workspace/state${suffix}`);
-    const connectionState = snapshot.connections?.find((item) => item.connectionId === activeConnectionId);
-    return {
-      revision: connectionState?.revision ?? snapshot.revision,
-      changedAt: connectionState?.changedAt ?? snapshot.changedAt,
-    };
+    return await apiClient.getWorkspaceState(getActiveConnectionId());
   } catch (error) {
     console.error(error);
     return null;
@@ -6510,50 +6504,35 @@ function hasUncommittedTitleDraft(): boolean {
 
 const api = {
   async listWorkspaceConnections(): Promise<WorkspaceConnection[]> {
-    return requestJson<WorkspaceConnection[]>("/api/workspace/connections");
+    return apiClient.listWorkspaceConnections();
   },
 
   async getGlobalMemory(): Promise<MemoryDocumentState> {
-    const payload = await requestJson<AppMemoryDocument>("/api/memory/global");
+    const payload = await apiClient.getGlobalMemory();
     return toMemoryDocumentState(payload, null);
   },
 
   async updateGlobalMemory(content: string): Promise<MemoryDocumentState> {
-    const payload = await requestJson<AppMemoryDocument>("/api/memory/global", {
-      method: "PUT",
-      body: JSON.stringify({ content }),
-    });
+    const payload = await apiClient.updateGlobalMemory(content);
     return toMemoryDocumentState(payload, null);
   },
 
   async deleteGlobalMemory(): Promise<void> {
-    await requestJson<{ ok: true }>("/api/memory/global", {
-      method: "DELETE",
-    });
+    await apiClient.deleteGlobalMemory();
   },
 
   async getWorkspaceMemory(connectionId: string): Promise<MemoryDocumentState> {
-    const payload = await requestJson<AppMemoryDocument & { connectionName?: string }>(
-      `/api/memory/workspace?connectionId=${encodeURIComponent(connectionId)}`
-    );
+    const payload = await apiClient.getWorkspaceMemory(connectionId);
     return toMemoryDocumentState(payload, payload.connectionName ?? null);
   },
 
   async updateWorkspaceMemory(connectionId: string, content: string): Promise<MemoryDocumentState> {
-    const payload = await requestJson<AppMemoryDocument & { connectionName?: string }>(
-      `/api/memory/workspace?connectionId=${encodeURIComponent(connectionId)}`,
-      {
-        method: "PUT",
-        body: JSON.stringify({ content }),
-      }
-    );
+    const payload = await apiClient.updateWorkspaceMemory(connectionId, content);
     return toMemoryDocumentState(payload, payload.connectionName ?? null);
   },
 
   async deleteWorkspaceMemory(connectionId: string): Promise<void> {
-    await requestJson<{ ok: true }>(`/api/memory/workspace?connectionId=${encodeURIComponent(connectionId)}`, {
-      method: "DELETE",
-    });
+    await apiClient.deleteWorkspaceMemory(connectionId);
   },
 
   async createWorkspaceConnection(payload: {
@@ -6564,10 +6543,7 @@ const api = {
     notesRoot?: string;
     isDefault: boolean;
   }): Promise<WorkspaceConnection> {
-    return requestJson<WorkspaceConnection>("/api/workspace/connections", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
+    return apiClient.createWorkspaceConnection(payload);
   },
 
   async updateWorkspaceConnection(
@@ -6581,86 +6557,57 @@ const api = {
       isDefault: boolean;
     }
   ): Promise<WorkspaceConnection> {
-    return requestJson<WorkspaceConnection>(`/api/workspace/connections/${encodeURIComponent(connectionId)}`, {
-      method: "PUT",
-      body: JSON.stringify(payload),
-    });
+    return apiClient.updateWorkspaceConnection(connectionId, payload);
   },
 
   async deleteWorkspaceConnection(connectionId: string): Promise<void> {
-    await requestJson<{ ok: true }>(`/api/workspace/connections/${encodeURIComponent(connectionId)}`, {
-      method: "DELETE",
-    });
+    await apiClient.deleteWorkspaceConnection(connectionId);
   },
 
   async pickDirectory(payload: { title?: string; defaultPath?: string }): Promise<string | null> {
-    const response = await requestJson<{ path: string | null }>("/api/system/pick-directory", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    return response.path;
+    return apiClient.pickDirectory(payload);
   },
 
   async createNote(payload: { title: string; content: string; folderPath?: string }): Promise<Note> {
-    return workspaceClient.createNote(payload, { connectionId: getActiveConnectionId() });
+    return apiClient.createNote(payload);
   },
 
   async updateNote(
     noteId: string,
     payload: { title: string; content: string; folderPath?: string }
   ): Promise<Note> {
-    return workspaceClient.updateNote(noteId, payload, { connectionId: getActiveConnectionId() });
+    return apiClient.updateNote(noteId, payload);
   },
 
   async deleteNote(noteId: string): Promise<void> {
-    await workspaceClient.deleteNote(noteId, { connectionId: getActiveConnectionId() });
+    await apiClient.deleteNote(noteId);
   },
 
   async getWorkspaceTabs(): Promise<TabsSessionSnapshot> {
-    return requestJson<TabsSessionSnapshot>("/api/workspace/tabs");
+    return apiClient.getWorkspaceTabs();
   },
 
   async openWorkspaceTab(
     noteId: string,
     options: { replaceActive?: boolean; forceNew?: boolean } = {}
   ): Promise<TabsSessionSnapshot> {
-    return requestJson<TabsSessionSnapshot>("/api/workspace/tabs/open", {
-      method: "POST",
-      body: JSON.stringify({
-        noteId,
-        connectionId: getActiveConnectionId(),
-        replaceActive: options.replaceActive,
-        forceNew: options.forceNew,
-      }),
-    });
+    return apiClient.openWorkspaceTab(noteId, options);
   },
 
   async closeWorkspaceTab(tabId: string): Promise<TabsSessionSnapshot> {
-    return requestJson<TabsSessionSnapshot>("/api/workspace/tabs/close", {
-      method: "POST",
-      body: JSON.stringify({ tabId }),
-    });
+    return apiClient.closeWorkspaceTab(tabId);
   },
 
   async setWorkspaceTabPinned(tabId: string, pinned: boolean): Promise<TabsSessionSnapshot> {
-    return requestJson<TabsSessionSnapshot>(pinned ? "/api/workspace/tabs/pin" : "/api/workspace/tabs/unpin", {
-      method: "POST",
-      body: JSON.stringify({ tabId }),
-    });
+    return apiClient.setWorkspaceTabPinned(tabId, pinned);
   },
 
   async reorderWorkspaceTabs(tabIds: string[]): Promise<TabsSessionSnapshot> {
-    return requestJson<TabsSessionSnapshot>("/api/workspace/tabs/reorder", {
-      method: "POST",
-      body: JSON.stringify({ tabIds }),
-    });
+    return apiClient.reorderWorkspaceTabs(tabIds);
   },
 
   async activateWorkspaceTab(tabId: string): Promise<TabsSessionSnapshot> {
-    return requestJson<TabsSessionSnapshot>("/api/workspace/tabs/activate", {
-      method: "POST",
-      body: JSON.stringify({ tabId }),
-    });
+    return apiClient.activateWorkspaceTab(tabId);
   },
 };
 
@@ -6760,15 +6707,15 @@ async function flushAllPendingSaves({ flash = false }: { flash?: boolean } = {})
 }
 
 async function flushPendingMemorySaves(options: {
-  scopes?: Array<"global" | "workspace">;
+  scopes?: MemorySaveScope[];
   flash?: boolean;
 } = {}): Promise<boolean> {
-  const scopes = options.scopes ?? ["global", "workspace"];
+  const scopes = resolveMemorySaveScopes(options.scopes);
   const results = await Promise.all(scopes.map((scope) => flushPendingMemorySave(scope, options.flash === true)));
-  return results.every(Boolean);
+  return didEverySaveSucceed(results);
 }
 
-async function flushPendingMemorySave(scope: "global" | "workspace", flash: boolean): Promise<boolean> {
+async function flushPendingMemorySave(scope: MemorySaveScope, flash: boolean): Promise<boolean> {
   const timer = scope === "global" ? globalMemorySaveTimer : workspaceMemorySaveTimer;
   if (timer !== null) {
     window.clearTimeout(timer);
@@ -6779,8 +6726,16 @@ async function flushPendingMemorySave(scope: "global" | "workspace", flash: bool
     }
   }
 
-  if (!isMemoryDirty(scope) && !getMemoryDocument(scope).saving) {
-    if (flash) {
+  const document = getMemoryDocument(scope);
+  const dirty = isMemoryDirty(scope);
+  if (shouldSkipMemorySave({
+    isDirty: dirty,
+    isLoading: document.loading,
+    isSaving: document.saving,
+    requiresConnection: scope === "workspace",
+    hasConnection: Boolean(document.connectionId),
+  })) {
+    if (flash && !dirty && !document.loading && !document.saving) {
       flashStatus(t("status.saved"));
     }
     return true;
@@ -6789,17 +6744,15 @@ async function flushPendingMemorySave(scope: "global" | "workspace", flash: bool
   return enqueueMemorySave(scope, flash);
 }
 
-async function enqueueMemorySave(scope: "global" | "workspace", flash: boolean): Promise<boolean> {
+async function enqueueMemorySave(scope: MemorySaveScope, flash: boolean): Promise<boolean> {
   const document = getMemoryDocument(scope);
-  if (document.loading || document.saving) {
-    return true;
-  }
-
-  if (scope === "workspace" && !document.connectionId) {
-    return true;
-  }
-
-  if (!isMemoryDirty(scope)) {
+  if (shouldSkipMemorySave({
+    isDirty: isMemoryDirty(scope),
+    isLoading: document.loading,
+    isSaving: document.saving,
+    requiresConnection: scope === "workspace",
+    hasConnection: Boolean(document.connectionId),
+  })) {
     return true;
   }
 
@@ -7463,38 +7416,6 @@ function getGraphPathHighlights(path: GraphPathResult | null): {
   }
 
   return { nodeIds, edgeIds };
-}
-
-async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
-    headers: {
-      "Content-Type": "application/json",
-      ...init.headers,
-    },
-    ...init,
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    let message = text.trim() || `Request failed: ${response.status}`;
-
-    try {
-      const payload = JSON.parse(text) as { error?: unknown };
-      if (typeof payload.error === "string" && payload.error.trim()) {
-        message = payload.error;
-      }
-    } catch {
-      // Keep the plain-text fallback.
-    }
-
-    throw new RequestError(response.status, message);
-  }
-
-  return response.json() as Promise<T>;
-}
-
-async function fetchJson<T>(url: string): Promise<T> {
-  return requestJson<T>(url);
 }
 
 function getGraphColorState(): {

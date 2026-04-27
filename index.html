@@ -18,11 +18,11 @@
     <div class="app-shell" id="app-shell">
       <aside class="activity-bar" data-i18n-aria-label="activity.primaryNavigation" aria-label="Primary navigation">
         <div class="activity-bar__stack">
-          <button type="button" class="activity-button" data-view="graph" data-i18n-title="activity.graph" title="Graph">
+          <button type="button" class="activity-button" data-view="graph" data-testid="activity-graph" data-i18n-title="activity.graph" title="Graph">
             <span class="activity-button__glyph" aria-hidden="true">◎</span>
             <span class="activity-button__label" data-i18n="activity.graph">Graph</span>
           </button>
-          <button type="button" class="activity-button" data-view="memory" data-i18n-title="activity.memory" title="Memory">
+          <button type="button" class="activity-button" data-view="memory" data-testid="activity-memory" data-i18n-title="activity.memory" title="Memory">
             <span class="activity-button__glyph" aria-hidden="true">◌</span>
             <span class="activity-button__label" data-i18n="activity.memory">Memory</span>
           </button>
@@ -100,6 +100,7 @@
           <input
             type="search"
             id="search-input"
+            data-testid="note-search"
             data-i18n-placeholder="sidebar.searchPlaceholder"
             placeholder="Заголовок или текст"
             autocomplete="off"
@@ -129,7 +130,7 @@
             <span data-i18n="notes.title">Заметки</span>
             <span class="notes-panel__count" id="note-count">0</span>
           </div>
-          <ul class="note-list" id="note-list"></ul>
+          <ul class="note-list" id="note-list" data-testid="note-list"></ul>
         </div>
       </aside>
 
@@ -146,14 +147,14 @@
       <main class="workspace">
         <header class="workspace__appbar">
           <div class="toolbar__meta">
-            <span class="status-pill" id="save-state">Markdown vault</span>
+            <span class="status-pill" id="save-state" data-testid="save-state">Markdown vault</span>
             <span class="status-text" id="note-meta">0</span>
           </div>
         </header>
 
         <nav class="workspace__tabs" data-i18n-aria-label="workspace.tabs" aria-label="Workspace tabs">
           <div class="workspace-tabs__rail">
-            <div class="workspace-tabs__list" id="workspace-tab-list">
+            <div class="workspace-tabs__list" id="workspace-tab-list" data-testid="workspace-tab-list">
               <div class="workspace-tabs__empty">
                 <span data-i18n="workspace.emptyTabsTitle">No tabs yet</span>
                 <span data-i18n="workspace.emptyTabsCopy">Open the current note to keep it in the workspace strip.</span>
@@ -206,6 +207,7 @@
                 <input
                   class="title-input"
                   id="note-title"
+                  data-testid="note-title"
                   type="text"
                   data-i18n-placeholder="note.titlePlaceholder"
                   placeholder="Название заметки"
@@ -224,6 +226,7 @@
             <textarea
               id="note-editor"
               class="editor-textarea"
+              data-testid="note-editor"
               data-i18n-placeholder="note.editorPlaceholder"
               placeholder="# Начните писать..."
               spellcheck="false"
@@ -231,7 +234,7 @@
             <div class="wikilink-suggestions" id="wikilink-suggestions" hidden></div>
           </article>
 
-          <article class="pane pane--preview" id="preview-pane">
+          <article class="pane pane--preview" id="preview-pane" data-testid="preview-pane">
             <div class="pane__header pane__header--preview">
               <div class="note-context" id="note-context" hidden>
                 <div class="context-group">
@@ -243,7 +246,7 @@
             <div class="markdown-preview" id="note-preview"></div>
           </article>
 
-          <article class="pane pane--graph" id="graph-pane">
+          <article class="pane pane--graph" id="graph-pane" data-testid="graph-pane">
             <div class="pane__header pane__header--graph">
               <div class="graph-toolbar">
                 <div class="graph-toolbar__group">
@@ -371,7 +374,7 @@
           </article>
         </section>
 
-        <section class="memory-layout" id="memory-layout" hidden>
+        <section class="memory-layout" id="memory-layout" data-testid="memory-layout" hidden>
           <header class="memory-layout__header">
             <div>
               <p class="eyebrow" data-i18n="memory.titleEyebrow">App Memory</p>

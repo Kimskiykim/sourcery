@@ -6,6 +6,8 @@
 
 ### Added
 
+- автоматизированный `npm run smoke:ui` для browser smoke проверки UI на временном vault
+- `npm run verify`, объединяющий unit/API тесты и UI smoke
 - веб-интерфейс для markdown vault с editor / preview / split
 - хранение заметок в реальных `.md` файлах внутри `vault/`
 - папки, вложенные markdown-файлы и группировка заметок по папкам
@@ -35,6 +37,7 @@
 
 ### Fixed
 
+- save status снова видим в UI и покрыт smoke-сценарием
 - сохранение заметок сделано атомарным на уровне файлового storage
 - добавлены best-effort save при закрытии вкладки и защита от потери несохранённых изменений
 - исправлен конфликт между markdown heading и hashtags

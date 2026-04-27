@@ -5,13 +5,16 @@
   "scripts": {
     "build": "tsc",
     "mcp": "node dist/mcp.js",
+    "smoke:ui": "npm run build && node scripts/smoke-ui.mjs",
     "test": "npm run build && node --test \"dist/**/*.test.js\"",
+    "verify": "npm test && npm run smoke:ui",
     "watch": "tsc --watch",
     "prestart": "npm run build",
     "start": "node dist/server.js"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "playwright": "^1.59.1",
     "typescript": "^5.0.0"
   }
 }

@@ -43,11 +43,24 @@ npm start
 npm test
 ```
 
+UI smoke test:
+
+```bash
+npm run smoke:ui
+```
+
+Full local verification:
+
+```bash
+npm run verify
+```
+
 Сейчас тестовый контур покрывает:
 
 - `src/core/storage/*`
 - `src/core/workspace/*`
 - `src/core/wiki/*`
+- browser smoke для загрузки UI, открытия заметки, editor/preview, search, Graph и Memory
 
 ## AI Assistants
 
