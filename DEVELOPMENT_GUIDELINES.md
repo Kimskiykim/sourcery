@@ -138,6 +138,12 @@
 npm run smoke:ui
 ```
 
+Для изменений agent API, MCP, workspace connections или context pack нужно запускать:
+
+```bash
+npm run smoke:agent
+```
+
 Перед завершением milestone-level изменений запускать:
 
 ```bash

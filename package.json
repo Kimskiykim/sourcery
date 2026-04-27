@@ -5,9 +5,10 @@
   "scripts": {
     "build": "tsc",
     "mcp": "node dist/mcp.js",
+    "smoke:agent": "npm run build && node scripts/smoke-agent.mjs",
     "smoke:ui": "npm run build && node scripts/smoke-ui.mjs",
     "test": "npm run build && node --test \"dist/**/*.test.js\"",
-    "verify": "npm test && npm run smoke:ui",
+    "verify": "npm test && npm run smoke:ui && npm run smoke:agent",
     "watch": "tsc --watch",
     "prestart": "npm run build",
     "start": "node dist/server.js"

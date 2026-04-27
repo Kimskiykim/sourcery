@@ -136,6 +136,29 @@ curl -X POST http://127.0.0.1:4173/api/agent/context \
 
 Если клиент сам умеет выполнять npm scripts, можно использовать и `npm run mcp`, но `node dist/mcp.js` обычно проще и стабильнее.
 
+### MCP Runtime Environment
+
+Для тестового или embedded запуска MCP entrypoint можно переопределить локальные пути:
+
+```bash
+SOURCERY_ROOT_DIR=/absolute/path/to/obsidian_md_custom \
+SOURCERY_VAULT_DIR=/absolute/path/to/vault \
+SOURCERY_APP_STATE_DIR=/absolute/path/to/.obsidian-lite \
+node dist/mcp.js
+```
+
+По умолчанию MCP запускается в read-only agent mode. Чтобы явно включить agent write tools:
+
+```bash
+SOURCERY_AGENT_ALLOW_NOTE_WRITES=1 node dist/mcp.js
+```
+
+Проверить end-to-end MCP готовность можно командой:
+
+```bash
+npm run smoke:agent
+```
+
 ## Что Проект Предоставляет Через MCP
 
 ### Tools
@@ -157,6 +180,7 @@ Sourcery MCP server сейчас предоставляет такие tools:
 - `notes.update`
 
 Но в стандартной конфигурации они отключены policy и не будут доступны, пока embedding не включит `allowNoteWrites`.
+Для stdio MCP entrypoint это соответствует `SOURCERY_AGENT_ALLOW_NOTE_WRITES=1`.
 
 ### Resources
 

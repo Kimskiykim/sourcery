@@ -4,7 +4,14 @@ import { encodeMcpMessage, McpMessageBuffer, SourceryMcpServer, type JsonRpcResp
 import { WikiSDK } from "./core/wiki/wiki-sdk.js";
 
 async function main(): Promise<void> {
-  const context = createAppContext();
+  const context = createAppContext({
+    rootDir: process.env.SOURCERY_ROOT_DIR,
+    vaultDir: process.env.SOURCERY_VAULT_DIR,
+    appStateDir: process.env.SOURCERY_APP_STATE_DIR,
+    agentPolicy: {
+      allowNoteWrites: parseBooleanEnv(process.env.SOURCERY_AGENT_ALLOW_NOTE_WRITES),
+    },
+  });
   await context.workspace.ensureSeeded();
   const server = new SourceryMcpServer(new AgentWorkspaceSDK({
     workspace: context.workspace,
@@ -12,6 +19,7 @@ async function main(): Promise<void> {
     graph: context.graph,
     connections: context.connections,
     tabsSession: context.tabsSession,
+    policy: context.agentPolicy,
   }));
   const messageBuffer = new McpMessageBuffer();
 
@@ -45,6 +53,10 @@ async function main(): Promise<void> {
 
 function writeMessage(message: JsonRpcResponse): void {
   process.stdout.write(encodeMcpMessage(message));
+}
+
+function parseBooleanEnv(value: string | undefined): boolean {
+  return value === "1" || value?.toLowerCase() === "true";
 }
 
 main().catch((error) => {

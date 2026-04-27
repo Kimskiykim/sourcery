@@ -49,6 +49,12 @@ UI smoke test:
 npm run smoke:ui
 ```
 
+Agent/MCP smoke test:
+
+```bash
+npm run smoke:agent
+```
+
 Full local verification:
 
 ```bash
@@ -61,6 +67,7 @@ npm run verify
 - `src/core/workspace/*`
 - `src/core/wiki/*`
 - browser smoke для загрузки UI, открытия заметки, editor/preview, search, Graph и Memory
+- MCP smoke для agent tools/resources/prompts, read-only policy и write-enabled note create/update
 
 ## AI Assistants
 
