@@ -73,9 +73,12 @@ export class WorkspaceTabsSessionStore {
       throw new Error(`Unknown note: ${input.noteId}`);
     }
 
-    const tabId = createWorkspaceTabId(connection.id, note.id, this.defaultConnection.id);
+    const baseTabId = createWorkspaceTabId(connection.id, note.id, this.defaultConnection.id);
+    const existingTab = input.forceNew !== true
+      ? this.snapshot.tabs.find((tab) => tab.id === baseTabId)
+      : undefined;
+    const activeTab = this.snapshot.tabs.find((tab) => tab.id === this.snapshot.activeTabId);
 
-    const existingTab = this.snapshot.tabs.find((tab) => tab.id === tabId);
     if (existingTab) {
       existingTab.title = note.title;
       existingTab.folderPath = note.folderPath;
@@ -93,6 +96,35 @@ export class WorkspaceTabsSessionStore {
       this.touch();
       return cloneWorkspaceTabsSessionSnapshot(this.snapshot);
     }
+
+    if (input.replaceActive && activeTab) {
+      const duplicateTargetTab = this.snapshot.tabs.find((tab) => tab.id === baseTabId && tab.id !== activeTab.id);
+      if (duplicateTargetTab) {
+        if (!activeTab.pinned) {
+          this.snapshot.tabs = this.snapshot.tabs.filter((tab) => tab.id !== activeTab.id);
+        }
+        this.snapshot.activeTabId = duplicateTargetTab.id;
+        this.touch();
+        return cloneWorkspaceTabsSessionSnapshot(this.snapshot);
+      }
+
+      activeTab.id = baseTabId;
+      activeTab.noteId = note.id;
+      activeTab.title = note.title;
+      activeTab.folderPath = note.folderPath;
+      activeTab.connectionId = connection.id;
+      activeTab.connectionName = connection.name;
+      if (input.pinned !== undefined) {
+        activeTab.pinned = input.pinned;
+      }
+      this.snapshot.activeTabId = activeTab.id;
+      this.touch();
+      return cloneWorkspaceTabsSessionSnapshot(this.snapshot);
+    }
+
+    const tabId = input.forceNew === true
+      ? createUniqueWorkspaceTabId(baseTabId, this.snapshot.tabs)
+      : baseTabId;
 
     this.snapshot.tabs.push({
       id: tabId,
@@ -371,13 +403,13 @@ export class GraphSDK {
 
   getBrokenLinks(notes: WorkspaceNote[], options: GraphBuildOptions = {}): GraphBrokenLink[] {
     const selectedNotes = this.filterNotes(notes, options);
-    const notesByTitle = buildNotesByTitle(notes);
+    const linkIndex = this.wiki.buildLinkIndex(notes);
 
     return selectedNotes.flatMap((note) => {
       const occurrencesByLink = new Map<string, number>();
 
       this.wiki.extractLinks(note.content).forEach(({ link }) => {
-        if (notesByTitle.has(link.toLowerCase())) {
+        if (this.wiki.resolveLinkTarget(link, linkIndex)) {
           return;
         }
 
@@ -426,11 +458,11 @@ export class GraphSDK {
     }
 
     const notesById = new Map(notes.map((note) => [note.id, note]));
-    const notesByTitle = buildNotesByTitle(notes);
+    const linkIndex = this.wiki.buildLinkIndex(notes);
     const neighbors = new Map<string, GraphNeighbor>();
 
     this.wiki.extractLinks(centerNote.content).forEach(({ link }) => {
-      const target = notesByTitle.get(link.toLowerCase());
+      const target = this.wiki.resolveLinkTarget(link, linkIndex);
       if (!target || !selectedIds.has(target.id)) {
         return;
       }
@@ -457,7 +489,7 @@ export class GraphSDK {
       }
 
       const incomingWeight = this.wiki.extractLinks(note.content)
-        .filter(({ link }) => link.toLowerCase() === centerNote.title.toLowerCase())
+        .filter(({ link }) => this.wiki.resolveLinkTarget(link, linkIndex)?.id === centerNote.id)
         .length;
       if (incomingWeight === 0) {
         return;
@@ -695,7 +727,7 @@ export class GraphSDK {
     const includeDangling = options.existingFilesOnly ? false : (options.includeDangling ?? true);
     const includeOrphans = options.includeOrphans ?? true;
     const selectedIds = new Set(selectedNotes.map((note) => note.id));
-    const notesByTitle = buildNotesByTitle(allNotes);
+    const linkIndex = this.wiki.buildLinkIndex(allNotes);
     const nodeDrafts = new Map<string, GraphNodeDraft>();
     const edgeDrafts = new Map<string, GraphEdge>();
     const noteDegrees = this.buildNoteDegrees(allNotes, selectedIds);
@@ -722,7 +754,7 @@ export class GraphSDK {
       }
 
       this.wiki.extractLinks(note.content).forEach(({ link }) => {
-        const target = notesByTitle.get(link.toLowerCase());
+        const target = this.wiki.resolveLinkTarget(link, linkIndex);
         if (target && selectedIds.has(target.id)) {
           if (!nodeDrafts.has(target.id)) {
             return;
@@ -787,7 +819,7 @@ export class GraphSDK {
   }
 
   private buildNoteAdjacency(notes: WorkspaceNote[]): Map<string, Set<string>> {
-    const notesByTitle = buildNotesByTitle(notes);
+    const linkIndex = this.wiki.buildLinkIndex(notes);
     const adjacency = new Map<string, Set<string>>();
 
     notes.forEach((note) => {
@@ -796,7 +828,7 @@ export class GraphSDK {
       }
 
       this.wiki.extractLinks(note.content).forEach(({ link }) => {
-        const target = notesByTitle.get(link.toLowerCase());
+        const target = this.wiki.resolveLinkTarget(link, linkIndex);
         if (!target) {
           return;
         }
@@ -835,7 +867,7 @@ export class GraphSDK {
     notes: WorkspaceNote[],
     selectedIds: Set<string>
   ): Map<string, { inboundLinks: number; outboundLinks: number }> {
-    const notesByTitle = buildNotesByTitle(notes);
+    const linkIndex = this.wiki.buildLinkIndex(notes);
     const linkStats = new Map<string, { inboundLinks: number; outboundLinks: number }>();
 
     selectedIds.forEach((noteId) => {
@@ -848,7 +880,7 @@ export class GraphSDK {
       }
 
       this.wiki.extractLinks(note.content).forEach(({ link }) => {
-        const target = notesByTitle.get(link.toLowerCase());
+        const target = this.wiki.resolveLinkTarget(link, linkIndex);
         if (!target || !selectedIds.has(target.id)) {
           return;
         }
@@ -930,7 +962,7 @@ export class GraphSDK {
     notes: WorkspaceNote[],
     selectedIds: Set<string>
   ): Map<string, number> {
-    const notesByTitle = buildNotesByTitle(notes);
+    const linkIndex = this.wiki.buildLinkIndex(notes);
     const noteDegrees = new Map<string, number>();
 
     selectedIds.forEach((noteId) => {
@@ -943,7 +975,7 @@ export class GraphSDK {
       }
 
       this.wiki.extractLinks(note.content).forEach(({ link }) => {
-        const target = notesByTitle.get(link.toLowerCase());
+        const target = this.wiki.resolveLinkTarget(link, linkIndex);
         if (!target || !selectedIds.has(target.id)) {
           return;
         }
@@ -955,19 +987,6 @@ export class GraphSDK {
 
     return noteDegrees;
   }
-}
-
-function buildNotesByTitle(notes: WorkspaceNote[]): Map<string, WorkspaceNote> {
-  const notesByTitle = new Map<string, WorkspaceNote>();
-
-  notes.forEach((note) => {
-    const key = note.title.toLowerCase();
-    if (!notesByTitle.has(key)) {
-      notesByTitle.set(key, note);
-    }
-  });
-
-  return notesByTitle;
 }
 
 function upsertEdge(
@@ -1212,6 +1231,21 @@ function createWorkspaceTabId(
   defaultConnectionId: string
 ): string {
   return connectionId === defaultConnectionId ? noteId : `${connectionId}:${noteId}`;
+}
+
+function createUniqueWorkspaceTabId(baseTabId: string, tabs: WorkspaceTab[]): string {
+  if (!tabs.some((tab) => tab.id === baseTabId)) {
+    return baseTabId;
+  }
+
+  let counter = 2;
+  let candidate = `${baseTabId}::${counter}`;
+  while (tabs.some((tab) => tab.id === candidate)) {
+    counter += 1;
+    candidate = `${baseTabId}::${counter}`;
+  }
+
+  return candidate;
 }
 
 function isWorkspaceTab(value: unknown): value is WorkspaceTab {

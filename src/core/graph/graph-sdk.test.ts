@@ -278,6 +278,48 @@ test("tabs session opens notes without duplicates and exposes active note metada
   assert.equal(reopened.activeNoteId, "projects/Alpha.md");
 });
 
+test("tabs session can replace the active tab instead of opening a new one", () => {
+  const session = new WorkspaceTabsSessionStore();
+
+  session.openNote(notes, { noteId: "projects/Alpha.md" });
+  const replaced = session.openNote(notes, {
+    noteId: "projects/Beta.md",
+    replaceActive: true,
+  });
+
+  assert.deepEqual(
+    replaced.tabs.map((tab) => ({
+      id: tab.id,
+      noteId: tab.noteId,
+      title: tab.title,
+    })),
+    [{
+      id: "projects/Beta.md",
+      noteId: "projects/Beta.md",
+      title: "Beta",
+    }]
+  );
+  assert.equal(replaced.activeTabId, "projects/Beta.md");
+  assert.equal(replaced.activeNoteId, "projects/Beta.md");
+});
+
+test("tabs session can open a duplicate tab when forced explicitly", () => {
+  const session = new WorkspaceTabsSessionStore();
+
+  session.openNote(notes, { noteId: "projects/Alpha.md" });
+  const duplicated = session.openNote(notes, {
+    noteId: "projects/Alpha.md",
+    forceNew: true,
+  });
+
+  assert.deepEqual(
+    duplicated.tabs.map((tab) => tab.id),
+    ["projects/Alpha.md", "projects/Alpha.md::2"]
+  );
+  assert.equal(duplicated.activeTabId, "projects/Alpha.md::2");
+  assert.equal(duplicated.activeNoteId, "projects/Alpha.md");
+});
+
 test("tabs session reorders activates and closes tabs predictably", () => {
   const session = new WorkspaceTabsSessionStore();
 
@@ -483,6 +525,79 @@ test("getBridgeNotes highlights notes whose removal splits the graph", () => {
       neighborCount: 3,
       neighborFolderCount: 2,
       disconnectedGroups: 2,
+    },
+  ]);
+});
+
+test("ambiguous wikilinks do not resolve to the first duplicate title", () => {
+  const duplicateNotes: WorkspaceNote[] = [
+    {
+      id: "areas/a/Alpha.md",
+      title: "Alpha",
+      folderPath: "areas/a",
+      content: "",
+      createdAt: "2026-04-21T00:00:00.000Z",
+      updatedAt: "2026-04-21T00:00:00.000Z",
+    },
+    {
+      id: "areas/b/Alpha.md",
+      title: "Alpha",
+      folderPath: "areas/b",
+      content: "",
+      createdAt: "2026-04-21T00:00:00.000Z",
+      updatedAt: "2026-04-21T00:00:00.000Z",
+    },
+    {
+      id: "Ambiguous.md",
+      title: "Ambiguous",
+      folderPath: "",
+      content: "[[Alpha]]",
+      createdAt: "2026-04-21T00:00:00.000Z",
+      updatedAt: "2026-04-21T00:00:00.000Z",
+    },
+    {
+      id: "Exact.md",
+      title: "Exact",
+      folderPath: "",
+      content: "[[areas/a/Alpha]]",
+      createdAt: "2026-04-21T00:00:00.000Z",
+      updatedAt: "2026-04-21T00:00:00.000Z",
+    },
+  ];
+
+  const snapshot = graph.buildGlobalGraph(duplicateNotes, { includeTags: false });
+  const brokenLinks = graph.getBrokenLinks(duplicateNotes);
+  const alphaNeighbors = graph.getNeighbors(duplicateNotes, "areas/a/Alpha.md");
+
+  assert.equal(
+    snapshot.edges.some((edge) => edge.source === "Ambiguous.md" && edge.target === "areas/a/Alpha.md"),
+    false
+  );
+  assert.equal(
+    snapshot.edges.some((edge) => edge.source === "Ambiguous.md" && edge.target === "areas/b/Alpha.md"),
+    false
+  );
+  assert.equal(
+    snapshot.edges.some((edge) => edge.source === "Exact.md" && edge.target === "areas/a/Alpha.md"),
+    true
+  );
+  assert.ok(snapshot.nodes.some((node) => node.id === "dangling:alpha"));
+  assert.deepEqual(brokenLinks, [
+    {
+      sourceNoteId: "Ambiguous.md",
+      sourceTitle: "Ambiguous",
+      sourceFolderPath: "",
+      linkText: "Alpha",
+      occurrences: 1,
+    },
+  ]);
+  assert.deepEqual(alphaNeighbors, [
+    {
+      noteId: "Exact.md",
+      title: "Exact",
+      folderPath: "",
+      direction: "incoming",
+      weight: 1,
     },
   ]);
 });

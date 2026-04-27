@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as nodeFs from "node:fs/promises";
 import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -182,6 +183,49 @@ test("listNotes returns notes from nested folders with folderPath metadata", asy
   );
 });
 
+test("listNotes and listFolders ignore common cache and dependency directories by default", async (t) => {
+  const { vault, vaultDir } = await createTestVault(t);
+
+  await nodeFs.mkdir(path.join(vaultDir, "__pycache__"), { recursive: true });
+  await nodeFs.mkdir(path.join(vaultDir, "node_modules", "pkg"), { recursive: true });
+  await nodeFs.mkdir(path.join(vaultDir, ".git"), { recursive: true });
+  await nodeFs.mkdir(path.join(vaultDir, "docs"), { recursive: true });
+
+  await nodeFs.writeFile(path.join(vaultDir, "__pycache__", "Ignored.md"), "ignored", "utf8");
+  await nodeFs.writeFile(path.join(vaultDir, "node_modules", "pkg", "Ignored Too.md"), "ignored", "utf8");
+  await nodeFs.writeFile(path.join(vaultDir, ".git", "Config.md"), "ignored", "utf8");
+  await nodeFs.writeFile(path.join(vaultDir, "docs", "Visible.md"), "visible", "utf8");
+
+  const notes = await vault.listNotes();
+  const folders = await vault.listFolders();
+
+  assert.deepEqual(notes.map((note) => note.id), ["docs/Visible.md"]);
+  assert.deepEqual(folders.map((folder) => folder.path), ["docs"]);
+});
+
+test("excludeGlobs skip matching folders and markdown files", async (t) => {
+  const vaultDir = await mkdtemp(path.join(tmpdir(), "sourcery-vault-"));
+  t.after(async () => {
+    await rm(vaultDir, { recursive: true, force: true });
+  });
+
+  const vault = new MarkdownVault(vaultDir, {
+    excludeGlobs: ["**/drafts/**", "**/*.private.md"],
+  });
+
+  await nodeFs.mkdir(path.join(vaultDir, "docs", "drafts"), { recursive: true });
+  await nodeFs.mkdir(path.join(vaultDir, "docs", "public"), { recursive: true });
+  await nodeFs.writeFile(path.join(vaultDir, "docs", "drafts", "Skip.md"), "skip", "utf8");
+  await nodeFs.writeFile(path.join(vaultDir, "docs", "public", "Keep.md"), "keep", "utf8");
+  await nodeFs.writeFile(path.join(vaultDir, "docs", "public", "Secret.private.md"), "secret", "utf8");
+
+  const notes = await vault.listNotes();
+  const folders = await vault.listFolders();
+
+  assert.deepEqual(notes.map((note) => note.id), ["docs/public/Keep.md"]);
+  assert.deepEqual(folders.map((folder) => folder.path), ["docs", "docs/public"]);
+});
+
 test("createFolder creates nested folders and listFolders returns them", async (t) => {
   const { vault, vaultDir } = await createTestVault(t);
 
@@ -262,4 +306,41 @@ test("deleteFolder removes an empty folder and rejects non-empty folders", async
       error.statusCode === 409 &&
       error.message === "Folder is not empty"
   );
+});
+
+test("updateNote keeps the original note in place when preparing the target write fails", async (t) => {
+  const { vaultDir } = await createTestVault(t);
+  const originalVault = new MarkdownVault(vaultDir);
+  const created = await originalVault.createNote({
+    title: "Draft",
+    content: "before",
+    folderPath: "topics",
+  });
+
+  const failingVault = new MarkdownVault(vaultDir, {
+    ...nodeFs,
+    async writeFile(filePath, data, encoding) {
+      if (
+        typeof filePath === "string"
+        && filePath.includes("Final Name.md")
+        && filePath.endsWith(".tmp")
+      ) {
+        throw new Error("simulated write failure");
+      }
+
+      return nodeFs.writeFile(filePath, data, encoding);
+    },
+  });
+
+  await assert.rejects(
+    () => failingVault.updateNote(created.id, {
+      title: "Final Name",
+      content: "after",
+      folderPath: "archive",
+    }),
+    /simulated write failure/
+  );
+
+  assert.equal(await readFile(path.join(vaultDir, "topics", "Draft.md"), "utf8"), "before");
+  await assert.rejects(() => readFile(path.join(vaultDir, "archive", "Final Name.md"), "utf8"));
 });

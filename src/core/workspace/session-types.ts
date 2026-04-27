@@ -1,10 +1,12 @@
-export type WorkspaceConnectionKind = "vault" | "repo_docs";
+export type WorkspaceConnectionKind = "vault" | "repo_docs" | "code_repo" | "docs_folder";
 
 export interface WorkspaceConnection {
   id: string;
   name: string;
   kind: WorkspaceConnectionKind;
   rootPath: string;
+  codeRoot?: string;
+  notesRoot?: string;
   isDefault?: boolean;
   includeGlobs?: string[];
   excludeGlobs?: string[];
@@ -43,6 +45,8 @@ export interface OpenWorkspaceTabInput {
   connectionId?: string;
   activate?: boolean;
   pinned?: boolean;
+  replaceActive?: boolean;
+  forceNew?: boolean;
 }
 
 export interface CloseWorkspaceTabInput {
@@ -66,7 +70,9 @@ export interface CreateWorkspaceConnectionInput {
   id?: string;
   name: string;
   kind: WorkspaceConnectionKind;
-  rootPath: string;
+  rootPath?: string;
+  codeRoot?: string;
+  notesRoot?: string;
   isDefault?: boolean;
   includeGlobs?: string[];
   excludeGlobs?: string[];
@@ -76,6 +82,8 @@ export interface UpdateWorkspaceConnectionInput {
   name?: string;
   kind?: WorkspaceConnectionKind;
   rootPath?: string;
+  codeRoot?: string;
+  notesRoot?: string;
   isDefault?: boolean;
   includeGlobs?: string[];
   excludeGlobs?: string[];
@@ -103,4 +111,29 @@ export interface RenameWorkspaceFolderByRefInput {
 
 export interface DeleteWorkspaceFolderByRefInput {
   folderRef: WorkspaceFolderRef;
+}
+
+type WorkspaceConnectionRootLike = {
+  rootPath?: string;
+  codeRoot?: string;
+  notesRoot?: string;
+};
+
+export function getWorkspaceConnectionNotesRoot(connection: WorkspaceConnectionRootLike): string {
+  const notesRoot = connection.notesRoot?.trim();
+  if (notesRoot) {
+    return notesRoot;
+  }
+
+  const rootPath = connection.rootPath?.trim();
+  if (rootPath) {
+    return rootPath;
+  }
+
+  const codeRoot = connection.codeRoot?.trim();
+  if (codeRoot) {
+    return codeRoot;
+  }
+
+  throw new Error("rootPath, notesRoot, or codeRoot is required");
 }

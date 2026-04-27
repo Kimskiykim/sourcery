@@ -1,4 +1,4 @@
-import { ObsidianAppClient, RequestError } from "./compat/obsidian/app.js";
+import { RequestError } from "./compat/obsidian/app.js";
 import type {
   GraphBrokenLink,
   GraphBridgeNote,
@@ -9,23 +9,60 @@ import type {
   GraphSnapshot,
   WorkspaceTabsSessionSnapshot as TabsSessionSnapshot,
 } from "./core/graph/types.js";
+import type { AppMemoryDocument } from "./core/memory/types.js";
+import type { WorkspaceConnection, WorkspaceConnectionKind } from "./core/workspace/session-types.js";
 import type { WorkspaceFolder, WorkspaceNote } from "./core/workspace/types.js";
 import { HttpWorkspaceClient } from "./core/workspace/http-workspace-client.js";
 import { matchesNoteQuery } from "./core/wiki/query.js";
+import { WikiSDK } from "./core/wiki/wiki-sdk.js";
 
-type ViewMode = "split" | "editor" | "preview" | "graph";
-type NoteViewMode = Exclude<ViewMode, "graph">;
+type ViewMode = "split" | "editor" | "preview" | "graph" | "memory";
+type NoteViewMode = Exclude<ViewMode, "graph" | "memory">;
 type FolderVisibilityMode = "all" | "selected";
 type GraphMode = "global" | "local";
 type GraphColorMode = "none" | "folder" | "tag" | "cluster";
+type ConnectionPathField = "rootPath" | "codeRoot" | "notesRoot";
+type Locale = "ru" | "en";
+
+interface WikilinkSuggestionItem {
+  noteId: string;
+  title: string;
+  folderPath: string;
+  insertion: string;
+  meta: string;
+}
+
+interface NavigationEntry {
+  view: ViewMode;
+  selectedNoteId: string | null;
+  selectedFolderPath: string;
+  activeTabId: string | null;
+  connectionId: string | null;
+  graph: {
+    mode: GraphMode;
+    folderScoped: boolean;
+    existingFilesOnly: boolean;
+    colorMode: GraphColorMode;
+    sidebarCollapsed: boolean;
+    selectedNodeId: string | null;
+    panX: number;
+    panY: number;
+    zoom: number;
+  };
+}
 
 interface Note extends WorkspaceNote {
   draftTitle?: string;
 }
 
 interface WorkspaceTab {
+  id: string;
   noteId: string;
+  title?: string;
+  folderPath?: string;
   pinned: boolean;
+  connectionId?: string;
+  connectionName?: string;
 }
 
 interface WorkspaceTabSessionState {
@@ -45,8 +82,47 @@ interface Vault {
   folderVisibilityMode: FolderVisibilityMode;
 }
 
+interface WorkspaceConnectionDraft {
+  name: string;
+  kind: WorkspaceConnectionKind;
+  rootPath: string;
+  codeRoot: string;
+  notesRoot: string;
+  isDefault: boolean;
+  activateOnSave: boolean;
+}
+
+interface WorkspaceConnectionManagerState {
+  open: boolean;
+  mode: "create" | "edit";
+  selectedConnectionId: string | null;
+  draft: WorkspaceConnectionDraft;
+  saving: boolean;
+  error: string | null;
+}
+
+interface MemoryDocumentState extends AppMemoryDocument {
+  connectionName: string | null;
+  savedContent: string;
+  loading: boolean;
+  saving: boolean;
+  error: string | null;
+}
+
 interface State {
+  locale: Locale;
+  workspace: {
+    connections: WorkspaceConnection[];
+    activeConnectionId: string | null;
+    switcherOpen: boolean;
+    manager: WorkspaceConnectionManagerState;
+  };
   vault: Vault;
+  memory: {
+    initialized: boolean;
+    global: MemoryDocumentState;
+    workspace: MemoryDocumentState;
+  };
   tabs: WorkspaceTabSessionState;
   shell: {
     explorerCollapsed: boolean;
@@ -57,6 +133,7 @@ interface State {
     contextMenuNoteId: string | null;
     contextMenuX: number;
     contextMenuY: number;
+    selectedNodeId: string | null;
     mode: GraphMode;
     folderScoped: boolean;
     existingFilesOnly: boolean;
@@ -82,6 +159,18 @@ interface State {
     panY: number;
     zoom: number;
   };
+  editor: {
+    wikilink: {
+      query: string;
+      replaceStart: number;
+      replaceEnd: number;
+      activeIndex: number;
+      items: WikilinkSuggestionItem[];
+    };
+  };
+  navigation: {
+    backStack: NavigationEntry[];
+  };
   query: string;
   view: ViewMode;
   workspaceRevision: number;
@@ -96,9 +185,31 @@ interface Elements {
   toggleExplorerGlyph: HTMLElement;
   graphNodeMenu: HTMLElement;
   explorerContextMenu: HTMLElement;
+  languageToggleButton: HTMLButtonElement;
+  memoryLayout: HTMLElement;
+  memoryGlobalEditor: HTMLTextAreaElement;
+  memoryWorkspaceEditor: HTMLTextAreaElement;
+  memoryGlobalState: HTMLElement;
+  memoryWorkspaceState: HTMLElement;
+  memoryGlobalUpdated: HTMLElement;
+  memoryWorkspaceUpdated: HTMLElement;
+  memoryWorkspaceConnection: HTMLElement;
+  memoryReloadAllButton: HTMLButtonElement;
+  memoryGlobalSaveButton: HTMLButtonElement;
+  memoryGlobalReloadButton: HTMLButtonElement;
+  memoryGlobalClearButton: HTMLButtonElement;
+  memoryWorkspaceSaveButton: HTMLButtonElement;
+  memoryWorkspaceReloadButton: HTMLButtonElement;
+  memoryWorkspaceClearButton: HTMLButtonElement;
+  sidebarVaultTitle: HTMLElement;
+  sidebarVaultSwitcher: HTMLButtonElement;
+  sidebarVaultMenu: HTMLElement;
+  workspaceConnectionsButton: HTMLButtonElement;
   workspaceTabList: HTMLElement;
+  workspaceNewTabButton: HTMLButtonElement;
   workspaceActiveTabState: HTMLElement;
   workspaceViewBadge: HTMLElement;
+  workspaceBackButton: HTMLButtonElement;
   folderList: HTMLUListElement;
   folderCount: HTMLElement;
   noteList: HTMLUListElement;
@@ -112,6 +223,7 @@ interface Elements {
   noteContext: HTMLElement;
   noteBacklinks: HTMLElement;
   noteEditor: HTMLTextAreaElement;
+  wikilinkSuggestions: HTMLElement;
   notePreview: HTMLDivElement;
   noteMeta: HTMLElement;
   graphPane: HTMLElement;
@@ -129,7 +241,7 @@ interface Elements {
   graphPathResult: HTMLElement;
   graphGlobalButton: HTMLButtonElement;
   graphLocalButton: HTMLButtonElement;
-  graphColorMode: HTMLSelectElement;
+  graphColorModeButton: HTMLButtonElement;
   graphFolderScopeButton: HTMLButtonElement;
   graphExistingOnlyButton: HTMLButtonElement;
   graphCenterViewButton: HTMLButtonElement;
@@ -151,6 +263,33 @@ interface Elements {
   saveState: HTMLElement;
   editorLayout: HTMLElement;
   emptyNoteTemplate: HTMLTemplateElement;
+  connectionManager: HTMLElement;
+  connectionManagerBackdrop: HTMLElement;
+  connectionManagerClose: HTMLButtonElement;
+  connectionManagerList: HTMLElement;
+  connectionManagerEmpty: HTMLElement;
+  connectionManagerForm: HTMLFormElement;
+  connectionManagerTitle: HTMLElement;
+  connectionManagerDescription: HTMLElement;
+  connectionManagerKindHint: HTMLElement;
+  connectionManagerRootField: HTMLElement;
+  connectionManagerRootLabel: HTMLElement;
+  connectionManagerRootHint: HTMLElement;
+  connectionManagerNameInput: HTMLInputElement;
+  connectionManagerKindSelect: HTMLSelectElement;
+  connectionManagerRootPathInput: HTMLInputElement;
+  connectionManagerCodeRootField: HTMLElement;
+  connectionManagerCodeRootInput: HTMLInputElement;
+  connectionManagerNotesRootField: HTMLElement;
+  connectionManagerNotesRootInput: HTMLInputElement;
+  connectionManagerDefaultCheckbox: HTMLInputElement;
+  connectionManagerActivateCheckbox: HTMLInputElement;
+  connectionManagerError: HTMLElement;
+  connectionManagerDeleteButton: HTMLButtonElement;
+  connectionManagerUseButton: HTMLButtonElement;
+  connectionManagerResetButton: HTMLButtonElement;
+  connectionManagerSubmitButton: HTMLButtonElement;
+  connectionManagerCreateButton: HTMLButtonElement;
   confirmDialog: HTMLElement;
   confirmDialogBackdrop: HTMLElement;
   confirmDialogTitle: HTMLElement;
@@ -172,10 +311,624 @@ const MIN_EXPLORER_WIDTH = 248;
 const MAX_EXPLORER_WIDTH = 420;
 const EXPLORER_WIDTH_STORAGE_KEY = "sourcery:explorer-width";
 const EXPLORER_COLLAPSED_STORAGE_KEY = "sourcery:explorer-collapsed";
+const LOCALE_STORAGE_KEY = "sourcery:locale";
+const ACTIVE_CONNECTION_STORAGE_KEY = "sourcery:active-connection";
 const workspaceClient = new HttpWorkspaceClient();
-const obsidianApp = new ObsidianAppClient(workspaceClient);
+const wiki = new WikiSDK();
+const TRANSLATIONS: Record<Locale, Record<string, string>> = {
+  ru: {
+    "app.title": "Sourcery",
+    "app.status": "Markdown vault",
+    "app.language.toggle": "EN",
+    "app.language.switch": "Switch to English",
+    "activity.primaryNavigation": "Основная навигация",
+    "activity.graph": "Граф",
+    "activity.memory": "Память",
+    "activity.explorer": "Проводник",
+    "activity.collapseExplorer": "Свернуть проводник",
+    "activity.expandExplorer": "Развернуть проводник",
+    "sidebar.explorer": "Проводник",
+    "sidebar.vault": "Хранилище",
+    "sidebar.search": "Поиск",
+    "sidebar.searchPlaceholder": "Название или текст",
+    "sidebar.refresh": "Обновить",
+    "sidebar.newFolder": "Новая папка",
+    "sidebar.newNote": "Новая заметка",
+    "folders.title": "Папки",
+    "folders.showAll": "Все",
+    "folders.showSelectedOnly": "Только выбранная",
+    "folders.rename": "Переименовать",
+    "folders.deleteEmpty": "Удалить пустую",
+    "notes.title": "Документы",
+    "workspace.eyebrow": "База знаний",
+    "workspace.connection": "Workspace",
+    "workspace.manage": "Источники",
+    "workspace.tabs": "Табы workspace",
+    "workspace.emptyTabsTitle": "Пока нет табов",
+    "workspace.emptyTabsCopy": "Откройте текущую заметку, чтобы закрепить ее в полосе workspace.",
+    "workspace.newTab": "Новая вкладка",
+    "workspace.back": "Назад",
+    "workspace.noActiveNote": "Нет активной заметки",
+    "workspace.currentNote": "Текущая заметка",
+    "workspace.edit": "Редактировать workspace",
+    "workspace.updateDescription": "Обновите корни, тип и поведение подключения по умолчанию.",
+    "workspace.tabPin": "Закрепить таб",
+    "workspace.tabUnpin": "Открепить таб",
+    "workspace.tabClose": "Закрыть таб",
+    "workspace.view": "Вид workspace",
+    "view.split": "Разделено",
+    "view.editor": "Редактор",
+    "view.preview": "Превью",
+    "view.graph": "Граф",
+    "view.memory": "Память",
+    "note.titlePlaceholder": "Название документа",
+    "note.move": "Переместить",
+    "note.delete": "Удалить",
+    "note.editorPlaceholder": "# Начните писать...",
+    "editor.noLinkMatches": "Нет подходящих заметок",
+    "note.backlinks": "Обратные ссылки",
+    "common.root": "Корень",
+    "common.copy": "Копировать",
+    "common.close": "Закрыть",
+    "common.connecting": "Подключение...",
+    "common.open": "Открыть",
+    "common.active": "Активно",
+    "common.default": "По умолчанию",
+    "common.notSet": "Не задано",
+    "common.rename": "Переименовать",
+    "common.delete": "Удалить",
+    "common.cancel": "Отмена",
+    "common.reload": "Обновить",
+    "common.save": "Сохранить",
+    "common.clear": "Очистить",
+    "common.current": "Текущая",
+    "common.swap": "Поменять",
+    "common.findPath": "Найти путь",
+    "common.color": "Цвет",
+    "common.from": "От",
+    "common.to": "До",
+    "common.loading": "Загрузка",
+    "common.error": "Ошибка",
+    "common.ready": "Готово",
+    "common.empty": "Пусто",
+    "common.draft": "Черновик",
+    "graph.titleEyebrow": "Граф знаний",
+    "graph.title": "Просмотр графа",
+    "graph.global": "Глобальный",
+    "graph.local": "Локальный",
+    "graph.scopeFolder": "Ограничить папкой",
+    "graph.existingOnly": "Только существующие",
+    "graph.center": "Центрировать",
+    "graph.resetView": "Сбросить вид",
+    "graph.hidePanel": "Скрыть панель",
+    "graph.showPanel": "Показать панель",
+    "graph.pathFinder": "Поиск пути",
+    "graph.topLinked": "Топ ссылок",
+    "graph.hubs": "Хабы",
+    "graph.bridges": "Мосты",
+    "graph.brokenLinks": "Битые ссылки",
+    "graph.orphans": "Сироты",
+    "graph.color.none": "Без цвета",
+    "graph.color.folder": "Папка",
+    "graph.color.tag": "Тег",
+    "graph.color.cluster": "Кластер",
+    "graph.loading": "Загрузка графа…",
+    "graph.loadingNotStarted": "Загрузка графа не начата",
+    "graph.loadError": "Ошибка загрузки graph view",
+    "graph.noData": "Нет данных графа для текущего scope",
+    "graph.chooseLocal": "Выберите заметку для локального графа",
+    "graph.noRankedNotes": "Нет заметок с рангом",
+    "graph.noHubNotes": "Нет hub-заметок",
+    "graph.noBridgeNotes": "Нет bridge-заметок",
+    "graph.noBrokenLinks": "Нет битых ссылок",
+    "graph.noOrphans": "Нет заметок-сирот",
+    "graph.revealInList": "Показать в списке",
+    "graph.copyWikilink": "Скопировать wikilink",
+    "graph.findingPath": "Поиск пути…",
+    "graph.chooseTwoNotes": "Выберите две заметки для анализа пути",
+    "graph.noPath": "Путь в текущем scope графа не найден",
+    "graph.pathError": "Ошибка поиска пути",
+    "graph.selectNote": "Выберите заметку",
+    "graph.distance": "Дистанция {distance}",
+    "graph.score": "оценка {score}",
+    "graph.step": "шаг {step}",
+    "graph.noNoteForLink": "Нет заметки для [[{label}]]",
+    "graph.noNoteLinks": "Нет note-to-note ссылок",
+    "graph.rootScope": "Scope корня",
+    "graph.wholeVault": "Весь vault",
+    "graph.globalGraph": "Глобальный граф",
+    "graph.localGraph": "Локальный граф",
+    "graph.notes": "{count} заметок",
+    "graph.edges": "{count} связей",
+    "graph.tags": "{count} тегов",
+    "graph.dangling": "{count} висячих",
+    "graph.orphansCount": "{count} сирот",
+    "graph.bridgeMeta": "{cuts} разрезов · {neighbors} соседей",
+    "graph.hubMeta": "{inbound} вход. · {outbound} выход. · {neighbors} соседей",
+    "graph.unresolvedLinks": "{count} неразреш. ссылок",
+    "graph.untagged": "Без тегов",
+    "graph.clusterLabel": "Кластер {size}",
+    "graph.unclustered": "Вне кластеров",
+    "memory.titleEyebrow": "Память приложения",
+    "memory.title": "Постоянная память вне подключенных vault",
+    "memory.copy": "Global memory живет вместе с Sourcery. Workspace memory следует за активным connection и не смешивается с графом, backlinks или поиском по vault.",
+    "memory.reloadAll": "Обновить память",
+    "memory.global": "Глобальная",
+    "memory.globalTitle": "Общая память приложения",
+    "memory.workspace": "Workspace",
+    "memory.notSavedYet": "Еще не сохранено",
+    "memory.noWorkspace": "Нет активного workspace",
+    "memory.globalPlaceholder": "Пользовательские предпочтения, стиль письма, правила по умолчанию и долгоживущий контекст.",
+    "memory.workspacePlaceholder": "Конвенции проекта, повторяющиеся решения, локальные workflow и контекст вне подключенного notes root.",
+    "memory.saved": "Память сохранена",
+    "memory.synced": "Память синхронизирована",
+    "memory.clearedGlobal": "Global memory очищена",
+    "memory.clearedWorkspace": "Workspace memory очищена",
+    "memory.meta": "Global {globalWords} слов · {workspaceLabel} {workspaceWords} слов",
+    "memory.clearGlobalTitle": "Очистить global memory",
+    "memory.clearWorkspaceTitle": "Очистить workspace memory",
+    "memory.clearDescription": "Содержимое memory будет удалено из локального app state.",
+    "memory.state.loading": "Загрузка",
+    "memory.state.saving": "Сохранение",
+    "memory.state.error": "Ошибка",
+    "memory.state.draft": "Черновик",
+    "memory.state.ready": "Готово",
+    "memory.state.empty": "Пусто",
+    "emptyVault.eyebrow": "Vault пуст",
+    "emptyVault.title": "Создайте первую заметку",
+    "emptyVault.copy": "Новая заметка будет сохранена как отдельный markdown-файл в папке vault.",
+    "connection.titleEyebrow": "Подключения workspace",
+    "connection.title": "Подключить workspace",
+    "connection.description": "Добавьте новое подключение для заметок, docs или кода.",
+    "connection.close": "Закрыть",
+    "connection.connected": "Подключенные workspace",
+    "connection.list": "Список",
+    "connection.new": "Новый",
+    "connection.emptyTitle": "Пока нет подключений",
+    "connection.emptyCopy": "Создайте подключение для vault, repo docs или docs folder.",
+    "connection.quickConnect": "Быстрое подключение",
+    "connection.chooseShape": "Выберите форму workspace",
+    "connection.connectVault": "Подключить vault",
+    "connection.connectVaultCopy": "Один корень markdown vault.",
+    "connection.connectDocsFolder": "Подключить docs folder",
+    "connection.connectDocsFolderCopy": "Отдельная директория docs.",
+    "connection.connectRepoDocs": "Подключить repo docs",
+    "connection.connectRepoDocsCopy": "Поддерево docs репозитория как notes root.",
+    "connection.connectCodeRepo": "Подключить code repo",
+    "connection.connectCodeRepoCopy": "Отдельные code root и notes root.",
+    "connection.name": "Имя",
+    "connection.type": "Тип",
+    "connection.kindHint.vault": "Один markdown vault с единым notes root.",
+    "connection.kindHint.repo_docs": "Workspace документации репозитория с единым docs path.",
+    "connection.kindHint.code_repo": "Репозиторий кода с отдельным notes/docs root.",
+    "connection.kindHint.docs_folder": "Отдельная директория docs вне code repository.",
+    "connection.vaultRoot": "Корень vault",
+    "connection.docsRoot": "Корень docs",
+    "connection.folderRoot": "Корень папки",
+    "connection.vaultRootHint": "Директория с markdown-заметками для этого workspace.",
+    "connection.repoDocsRootHint": "Директория документации внутри репозитория.",
+    "connection.folderRootHint": "Директория, которая должна индексироваться как notes root.",
+    "connection.pathHelp": "Вставьте абсолютный путь или перетащите папку в поле пути. Поддерживаются URL вида `file://`.",
+    "connection.default": "Сделать это подключение workspace по умолчанию",
+    "connection.activate": "Переключиться на этот workspace после сохранения",
+    "connection.useNow": "Использовать сейчас",
+    "connection.reset": "Сбросить",
+    "connection.create": "Создать подключение",
+    "connection.save": "Сохранить изменения",
+    "connection.codeRoot": "Корень кода",
+    "connection.codeLabel": "Код",
+    "connection.notesRoot": "Корень заметок",
+    "connection.notesLabel": "Заметки",
+    "connection.rootLabel": "Корень",
+    "connection.kindSuffix.codeRepo": "code repo",
+    "connection.kindSuffix.docs": "docs",
+    "connection.kindSuffix.repoDocs": "repo docs",
+    "connection.mainRepoRoot": "Основной корень репозитория для навигации по коду.",
+    "connection.notesRootHint": "Markdown notes или docs root, связанный с code repo.",
+    "connection.browse": "Выбрать",
+    "connection.paste": "Вставить",
+    "connection.clear": "Очистить",
+    "dialog.confirmation": "Подтверждение",
+    "dialog.cannotUndo": "Это действие нельзя отменить.",
+    "status.loadingVault": "Загрузка vault...",
+    "status.refreshingVault": "Обновление vault...",
+    "status.synced": "Синхронизировано",
+    "status.pathApplied": "Путь применен",
+    "status.pathPasted": "Путь вставлен",
+    "status.folderChosen": "Папка выбрана",
+    "status.workspaceConnected": "Workspace подключён",
+    "status.workspaceUpdated": "Workspace обновлён",
+    "status.connectionDeleted": "Подключение удалено",
+    "status.loadError": "Ошибка загрузки",
+    "status.switchingWorkspace": "Переключение workspace...",
+    "status.noteCreated": "Создан markdown-файл",
+    "status.folderCreated": "Папка создана: {path}",
+    "status.folderRenamed": "Папка переименована: {path}",
+    "status.folderDeleted": "Папка удалена: {path}",
+    "status.onlyEmptyFolders": "Удаляются только пустые папки",
+    "status.moving": "Перемещение...",
+    "status.movedTo": "Перемещено в {path}",
+    "status.movedToRoot": "Перемещено в Корень",
+    "status.fileDeleted": "Файл удалён",
+    "status.shownInList": "Показано в списке: {title}",
+    "status.copyFailed": "Не удалось скопировать wikilink",
+    "status.unsavedChanges": "Есть несохранённые изменения",
+    "status.saved": "Сохранено",
+    "status.saving": "Сохранение...",
+    "status.savedInVault": "Сохранено в vault",
+    "status.externalChanges": "Есть внешние изменения",
+    "status.externalReloading": "Внешние изменения, обновление...",
+    "status.externalApplied": "Внешние изменения применены",
+    "status.applyingExternal": "Применение внешних изменений...",
+    "status.vaultUpdated": "Vault обновлён с диска",
+    "status.memoryReloading": "Обновление memory...",
+    "status.memorySaved": "Память сохранена",
+    "status.memoryLoadError": "Ошибка загрузки memory",
+    "status.noConnections": "Нет подключённых workspace",
+    "status.copyFolder": "Скопировано: {value}",
+    "status.copyWikilink": "Скопировано: [[{title}]]",
+    "status.filterTag": "Фильтр по #{tag}",
+    "prompt.newFolder": "Путь новой папки",
+    "prompt.renameFolder": "Новый путь папки",
+    "prompt.moveNote": "Куда переместить заметку",
+    "prompt.renameNote": "Новое название заметки",
+    "confirm.deleteFolderTitle": "Удалить папку?",
+    "confirm.deleteFolderDescription": "Папка \"{path}\" будет удалена. Это действие нельзя отменить.",
+    "confirm.deleteNoteTitle": "Удалить заметку?",
+    "confirm.deleteNoteDescription": "Заметка \"{title}\" будет удалена из vault. Это действие нельзя отменить.",
+    "confirm.deleteConnectionTitle": "Удалить workspace {name}?",
+    "confirm.deleteConnectionDescription": "Табы этой connection будут закрыты. Это действие нельзя отменить.",
+    "confirm.deleteConnectionDefault": "Default connection удалить нельзя.",
+    "error.create": "Ошибка создания",
+    "error.createFolder": "Ошибка создания папки",
+    "error.renameFolder": "Ошибка переименования папки",
+    "error.deleteFolder": "Ошибка удаления папки",
+    "error.move": "Ошибка перемещения",
+    "error.delete": "Ошибка удаления",
+    "error.save": "Ошибка сохранения",
+    "error.memorySave": "Ошибка сохранения memory",
+    "error.memoryWorkspaceLoad": "Ошибка загрузки workspace memory",
+    "error.memoryGlobalLoad": "Ошибка загрузки global memory",
+    "error.memoryClear": "Ошибка очистки memory",
+    "error.invalidClipboardPath": "Буфер обмена не содержит абсолютный путь или file:// URL.",
+    "error.readClipboard": "Не удалось прочитать clipboard. Вставьте путь вручную.",
+    "error.pickDirectory": "Не удалось открыть выбор папки",
+    "error.workspaceNameRequired": "Название workspace обязательно.",
+    "error.codeRootRequired": "Для code repo укажите code root.",
+    "error.notesRootRequired": "Для code repo укажите notes root.",
+    "error.rootPathRequired": "Укажите root path для workspace.",
+    "error.connectionMissing": "Подключение не найдено.",
+    "error.connectionSave": "Не удалось сохранить подключение",
+    "error.connectionDelete": "Не удалось удалить подключение",
+    "error.titleTaken": "Название уже занято",
+    "folder.rootCannotDelete": "Корень удалить нельзя",
+    "folder.rootCannotRename": "Корень переименовать нельзя",
+    "folder.deleteSelected": "Удалить пустую папку {path}",
+    "folder.deleteOnlyEmpty": "Удаляются только пустые папки без вложенных папок и заметок",
+    "folder.renameSelected": "Переименовать {path}",
+    "folder.expand": "Развернуть папку",
+    "folder.collapse": "Свернуть папку",
+    "note.none": "Нет заметок",
+    "note.noneCopy": "Создайте markdown-заметку, и она появится здесь.",
+    "note.emptyExcerpt": "Пустая заметка",
+    "note.wordsMeta": "{count} слов",
+    "note.charactersMeta": "{count} символов",
+  },
+  en: {
+    "app.title": "Sourcery",
+    "app.status": "Markdown vault",
+    "app.language.toggle": "RU",
+    "app.language.switch": "Switch to Russian",
+    "activity.primaryNavigation": "Primary navigation",
+    "activity.graph": "Graph",
+    "activity.memory": "Memory",
+    "activity.explorer": "Explorer",
+    "activity.collapseExplorer": "Collapse explorer",
+    "activity.expandExplorer": "Expand explorer",
+    "sidebar.explorer": "Explorer",
+    "sidebar.vault": "Vault",
+    "sidebar.search": "Search",
+    "sidebar.searchPlaceholder": "Name or text",
+    "sidebar.refresh": "Refresh",
+    "sidebar.newFolder": "New folder",
+    "sidebar.newNote": "New note",
+    "folders.title": "Folders",
+    "folders.showAll": "Show all",
+    "folders.showSelectedOnly": "Selected only",
+    "folders.rename": "Rename",
+    "folders.deleteEmpty": "Delete empty",
+    "notes.title": "Documents",
+    "workspace.eyebrow": "Knowledge Workspace",
+    "workspace.connection": "Workspace",
+    "workspace.manage": "Sources",
+    "workspace.tabs": "Workspace tabs",
+    "workspace.emptyTabsTitle": "No tabs yet",
+    "workspace.emptyTabsCopy": "Open the current note to keep it in the workspace strip.",
+    "workspace.newTab": "New tab",
+    "workspace.back": "Back",
+    "workspace.noActiveNote": "No active note",
+    "workspace.currentNote": "Current note",
+    "workspace.edit": "Edit workspace",
+    "workspace.updateDescription": "Update connection roots, type, and default behavior.",
+    "workspace.tabPin": "Pin tab",
+    "workspace.tabUnpin": "Unpin tab",
+    "workspace.tabClose": "Close tab",
+    "workspace.view": "Workspace view",
+    "view.split": "Split",
+    "view.editor": "Editor",
+    "view.preview": "Preview",
+    "view.graph": "Graph",
+    "view.memory": "Memory",
+    "note.titlePlaceholder": "Document title",
+    "note.move": "Move",
+    "note.delete": "Delete",
+    "note.editorPlaceholder": "# Start writing...",
+    "editor.noLinkMatches": "No matching notes",
+    "note.backlinks": "Backlinks",
+    "common.root": "Root",
+    "common.copy": "Copy",
+    "common.close": "Close",
+    "common.connecting": "Connecting...",
+    "common.open": "Open",
+    "common.active": "Active",
+    "common.default": "Default",
+    "common.notSet": "Not set",
+    "common.rename": "Rename",
+    "common.delete": "Delete",
+    "common.cancel": "Cancel",
+    "common.reload": "Reload",
+    "common.save": "Save",
+    "common.clear": "Clear",
+    "common.current": "Current",
+    "common.swap": "Swap",
+    "common.findPath": "Find path",
+    "common.color": "Color",
+    "common.from": "From",
+    "common.to": "To",
+    "common.loading": "Loading",
+    "common.error": "Error",
+    "common.ready": "Ready",
+    "common.empty": "Empty",
+    "common.draft": "Draft",
+    "graph.titleEyebrow": "Knowledge Graph",
+    "graph.title": "Graph View",
+    "graph.global": "Global",
+    "graph.local": "Local",
+    "graph.scopeFolder": "Scope folder",
+    "graph.existingOnly": "Existing only",
+    "graph.center": "Center",
+    "graph.resetView": "Reset view",
+    "graph.hidePanel": "Hide panel",
+    "graph.showPanel": "Show panel",
+    "graph.pathFinder": "Path finder",
+    "graph.topLinked": "Top linked",
+    "graph.hubs": "Hubs",
+    "graph.bridges": "Bridges",
+    "graph.brokenLinks": "Broken links",
+    "graph.orphans": "Orphans",
+    "graph.color.none": "None",
+    "graph.color.folder": "Folder",
+    "graph.color.tag": "Tag",
+    "graph.color.cluster": "Cluster",
+    "graph.loading": "Loading graph…",
+    "graph.loadingNotStarted": "Graph loading not started",
+    "graph.loadError": "Failed to load graph view",
+    "graph.noData": "No graph data for the current scope",
+    "graph.chooseLocal": "Select a note for local graph",
+    "graph.noRankedNotes": "No ranked notes",
+    "graph.noHubNotes": "No hub notes",
+    "graph.noBridgeNotes": "No bridge notes",
+    "graph.noBrokenLinks": "No broken links",
+    "graph.noOrphans": "No orphan notes",
+    "graph.revealInList": "Reveal in list",
+    "graph.copyWikilink": "Copy wikilink",
+    "graph.findingPath": "Finding path…",
+    "graph.chooseTwoNotes": "Choose two notes to inspect graph path",
+    "graph.noPath": "No path found in the current graph scope",
+    "graph.pathError": "Path search failed",
+    "graph.selectNote": "Select note",
+    "graph.distance": "Distance {distance}",
+    "graph.score": "score {score}",
+    "graph.step": "step {step}",
+    "graph.noNoteForLink": "No note for [[{label}]]",
+    "graph.noNoteLinks": "No note-to-note links",
+    "graph.rootScope": "Root scope",
+    "graph.wholeVault": "Whole vault",
+    "graph.globalGraph": "Global graph",
+    "graph.localGraph": "Local graph",
+    "graph.notes": "{count} notes",
+    "graph.edges": "{count} edges",
+    "graph.tags": "{count} tags",
+    "graph.dangling": "{count} dangling",
+    "graph.orphansCount": "{count} orphans",
+    "graph.bridgeMeta": "{cuts} cuts · {neighbors} neighbors",
+    "graph.hubMeta": "{inbound} in · {outbound} out · {neighbors} neighbors",
+    "graph.unresolvedLinks": "{count} unresolved links",
+    "graph.untagged": "Untagged",
+    "graph.clusterLabel": "Cluster {size}",
+    "graph.unclustered": "Unclustered",
+    "memory.titleEyebrow": "App Memory",
+    "memory.title": "Persistent memory outside connected vaults",
+    "memory.copy": "Global memory stays with Sourcery. Workspace memory follows the active connection and is not mixed into graph, backlinks, or vault search.",
+    "memory.reloadAll": "Reload memory",
+    "memory.global": "Global",
+    "memory.globalTitle": "Shared app memory",
+    "memory.workspace": "Workspace",
+    "memory.notSavedYet": "Not saved yet",
+    "memory.noWorkspace": "No active workspace",
+    "memory.globalPlaceholder": "User preferences, writing style, default rules, and long-lived context.",
+    "memory.workspacePlaceholder": "Project conventions, recurring decisions, local workflows, and context that should live outside the connected notes root.",
+    "memory.saved": "Memory saved",
+    "memory.synced": "Memory synced",
+    "memory.clearedGlobal": "Global memory cleared",
+    "memory.clearedWorkspace": "Workspace memory cleared",
+    "memory.meta": "Global {globalWords} words · {workspaceLabel} {workspaceWords} words",
+    "memory.clearGlobalTitle": "Clear global memory",
+    "memory.clearWorkspaceTitle": "Clear workspace memory",
+    "memory.clearDescription": "Memory content will be removed from the local app state.",
+    "memory.state.loading": "Loading",
+    "memory.state.saving": "Saving",
+    "memory.state.error": "Error",
+    "memory.state.draft": "Draft",
+    "memory.state.ready": "Ready",
+    "memory.state.empty": "Empty",
+    "emptyVault.eyebrow": "Vault is empty",
+    "emptyVault.title": "Create the first note",
+    "emptyVault.copy": "The new note will be saved as a separate markdown file inside the vault folder.",
+    "connection.titleEyebrow": "Workspace Connections",
+    "connection.title": "Connect workspace",
+    "connection.description": "Add a new workspace connection for notes, docs, or code.",
+    "connection.close": "Close",
+    "connection.connected": "Connected workspaces",
+    "connection.list": "List",
+    "connection.new": "New",
+    "connection.emptyTitle": "No connections yet",
+    "connection.emptyCopy": "Create a connection to attach a vault, repo docs, or docs folder.",
+    "connection.quickConnect": "Quick connect",
+    "connection.chooseShape": "Choose a workspace shape",
+    "connection.connectVault": "Connect vault",
+    "connection.connectVaultCopy": "Single markdown vault root.",
+    "connection.connectDocsFolder": "Connect docs folder",
+    "connection.connectDocsFolderCopy": "Standalone docs directory.",
+    "connection.connectRepoDocs": "Connect repo docs",
+    "connection.connectRepoDocsCopy": "Repository docs subtree as notes root.",
+    "connection.connectCodeRepo": "Connect code repo",
+    "connection.connectCodeRepoCopy": "Separate code root and notes root.",
+    "connection.name": "Name",
+    "connection.type": "Type",
+    "connection.kindHint.vault": "Single markdown vault with one notes root.",
+    "connection.kindHint.repo_docs": "Repository documentation workspace rooted in one docs path.",
+    "connection.kindHint.code_repo": "Code repository with a separate notes/docs root.",
+    "connection.kindHint.docs_folder": "Standalone docs directory outside a code repository.",
+    "connection.vaultRoot": "Vault root",
+    "connection.docsRoot": "Docs root",
+    "connection.folderRoot": "Folder root",
+    "connection.vaultRootHint": "Directory with markdown notes for this workspace.",
+    "connection.repoDocsRootHint": "Documentation directory inside the repository.",
+    "connection.folderRootHint": "Directory that should be indexed as the notes root.",
+    "connection.pathHelp": "Paste an absolute path or drag a folder into a path field. `file://` URLs are supported.",
+    "connection.default": "Make this the default workspace connection",
+    "connection.activate": "Switch to this workspace after save",
+    "connection.useNow": "Use now",
+    "connection.reset": "Reset",
+    "connection.create": "Create connection",
+    "connection.save": "Save changes",
+    "connection.codeRoot": "Code root",
+    "connection.codeLabel": "Code",
+    "connection.notesRoot": "Notes root",
+    "connection.notesLabel": "Notes",
+    "connection.rootLabel": "Root",
+    "connection.kindSuffix.codeRepo": "code repo",
+    "connection.kindSuffix.docs": "docs",
+    "connection.kindSuffix.repoDocs": "repo docs",
+    "connection.mainRepoRoot": "Main repository root for code browsing.",
+    "connection.notesRootHint": "Markdown notes or docs root linked to the code repo.",
+    "connection.browse": "Browse",
+    "connection.paste": "Paste",
+    "connection.clear": "Clear",
+    "dialog.confirmation": "Confirmation",
+    "dialog.cannotUndo": "This action cannot be undone.",
+    "status.loadingVault": "Loading vault...",
+    "status.refreshingVault": "Refreshing vault...",
+    "status.synced": "Synced",
+    "status.pathApplied": "Path applied",
+    "status.pathPasted": "Path pasted",
+    "status.folderChosen": "Folder chosen",
+    "status.workspaceConnected": "Workspace connected",
+    "status.workspaceUpdated": "Workspace updated",
+    "status.connectionDeleted": "Connection deleted",
+    "status.loadError": "Load error",
+    "status.switchingWorkspace": "Switching workspace...",
+    "status.noteCreated": "Markdown file created",
+    "status.folderCreated": "Folder created: {path}",
+    "status.folderRenamed": "Folder renamed: {path}",
+    "status.folderDeleted": "Folder deleted: {path}",
+    "status.onlyEmptyFolders": "Only empty folders can be deleted",
+    "status.moving": "Moving...",
+    "status.movedTo": "Moved to {path}",
+    "status.movedToRoot": "Moved to Root",
+    "status.fileDeleted": "File deleted",
+    "status.shownInList": "Shown in list: {title}",
+    "status.copyFailed": "Failed to copy wikilink",
+    "status.unsavedChanges": "Unsaved changes",
+    "status.saved": "Saved",
+    "status.saving": "Saving...",
+    "status.savedInVault": "Saved to vault",
+    "status.externalChanges": "External changes detected",
+    "status.externalReloading": "External changes detected, reloading...",
+    "status.externalApplied": "External changes applied",
+    "status.applyingExternal": "Applying external changes...",
+    "status.vaultUpdated": "Vault updated from disk",
+    "status.memoryReloading": "Refreshing memory...",
+    "status.memorySaved": "Memory saved",
+    "status.memoryLoadError": "Memory load error",
+    "status.noConnections": "No workspace connections",
+    "status.copyFolder": "Copied: {value}",
+    "status.copyWikilink": "Copied: [[{title}]]",
+    "status.filterTag": "Filtered by #{tag}",
+    "prompt.newFolder": "New folder path",
+    "prompt.renameFolder": "New folder path",
+    "prompt.moveNote": "Move note to",
+    "prompt.renameNote": "New note title",
+    "confirm.deleteFolderTitle": "Delete folder?",
+    "confirm.deleteFolderDescription": "Folder \"{path}\" will be deleted. This action cannot be undone.",
+    "confirm.deleteNoteTitle": "Delete note?",
+    "confirm.deleteNoteDescription": "Note \"{title}\" will be deleted from the vault. This action cannot be undone.",
+    "confirm.deleteConnectionTitle": "Delete workspace {name}?",
+    "confirm.deleteConnectionDescription": "Tabs for this connection will be closed. This action cannot be undone.",
+    "confirm.deleteConnectionDefault": "The default connection cannot be deleted.",
+    "error.create": "Create failed",
+    "error.createFolder": "Folder creation failed",
+    "error.renameFolder": "Folder rename failed",
+    "error.deleteFolder": "Folder deletion failed",
+    "error.move": "Move failed",
+    "error.delete": "Delete failed",
+    "error.save": "Save failed",
+    "error.memorySave": "Memory save failed",
+    "error.memoryWorkspaceLoad": "Workspace memory load failed",
+    "error.memoryGlobalLoad": "Global memory load failed",
+    "error.memoryClear": "Memory clear failed",
+    "error.invalidClipboardPath": "Clipboard does not contain an absolute path or file:// URL.",
+    "error.readClipboard": "Failed to read the clipboard. Paste the path manually.",
+    "error.pickDirectory": "Failed to open the folder picker",
+    "error.workspaceNameRequired": "Workspace name is required.",
+    "error.codeRootRequired": "Code root is required for a code repo.",
+    "error.notesRootRequired": "Notes root is required for a code repo.",
+    "error.rootPathRequired": "Root path is required for the workspace.",
+    "error.connectionMissing": "Connection not found.",
+    "error.connectionSave": "Failed to save connection",
+    "error.connectionDelete": "Failed to delete connection",
+    "error.titleTaken": "Title is already in use",
+    "folder.rootCannotDelete": "Root cannot be deleted",
+    "folder.rootCannotRename": "Root cannot be renamed",
+    "folder.deleteSelected": "Delete empty folder {path}",
+    "folder.deleteOnlyEmpty": "Only empty folders without child folders or notes can be deleted",
+    "folder.renameSelected": "Rename {path}",
+    "folder.expand": "Expand folder",
+    "folder.collapse": "Collapse folder",
+    "note.none": "No notes",
+    "note.noneCopy": "Create a markdown note and it will appear here.",
+    "note.emptyExcerpt": "Empty note",
+    "note.wordsMeta": "{count} words",
+    "note.charactersMeta": "{count} characters",
+  },
+};
 
 const state: State = {
+  locale: resolveInitialLocale(),
+  workspace: {
+    connections: [],
+    activeConnectionId: null,
+    switcherOpen: false,
+    manager: {
+      open: false,
+      mode: "edit",
+      selectedConnectionId: null,
+      draft: createEmptyConnectionDraft(),
+      saving: false,
+      error: null,
+    },
+  },
   vault: {
     selectedNoteId: null,
     selectedNoteIds: [],
@@ -185,6 +938,11 @@ const state: State = {
     selectedFolderPath: "",
     collapsedFolderPaths: [],
     folderVisibilityMode: "all",
+  },
+  memory: {
+    initialized: false,
+    global: createEmptyMemoryDocument("global"),
+    workspace: createEmptyMemoryDocument("workspace"),
   },
   tabs: {
     tabs: [],
@@ -200,11 +958,12 @@ const state: State = {
     contextMenuNoteId: null,
     contextMenuX: 0,
     contextMenuY: 0,
+    selectedNodeId: null,
     mode: "global",
     folderScoped: false,
     existingFilesOnly: false,
     colorMode: "none",
-    sidebarCollapsed: false,
+    sidebarCollapsed: true,
     snapshot: null,
     clusters: [],
     topLinked: [],
@@ -225,6 +984,18 @@ const state: State = {
     panY: 0,
     zoom: 1,
   },
+  editor: {
+    wikilink: {
+      query: "",
+      replaceStart: 0,
+      replaceEnd: 0,
+      activeIndex: 0,
+      items: [],
+    },
+  },
+  navigation: {
+    backStack: [],
+  },
   query: "",
   view: "split",
   workspaceRevision: 0,
@@ -239,9 +1010,31 @@ const elements: Elements = {
   toggleExplorerGlyph: query<HTMLElement>("#toggle-explorer-glyph"),
   graphNodeMenu: query<HTMLElement>("#graph-node-menu"),
   explorerContextMenu: query<HTMLElement>("#explorer-context-menu"),
+  languageToggleButton: query<HTMLButtonElement>("#language-toggle-button"),
+  memoryLayout: query<HTMLElement>("#memory-layout"),
+  memoryGlobalEditor: query<HTMLTextAreaElement>("#memory-global-editor"),
+  memoryWorkspaceEditor: query<HTMLTextAreaElement>("#memory-workspace-editor"),
+  memoryGlobalState: query<HTMLElement>("#memory-global-state"),
+  memoryWorkspaceState: query<HTMLElement>("#memory-workspace-state"),
+  memoryGlobalUpdated: query<HTMLElement>("#memory-global-updated"),
+  memoryWorkspaceUpdated: query<HTMLElement>("#memory-workspace-updated"),
+  memoryWorkspaceConnection: query<HTMLElement>("#memory-workspace-connection"),
+  memoryReloadAllButton: query<HTMLButtonElement>("#memory-reload-all-button"),
+  memoryGlobalSaveButton: query<HTMLButtonElement>("#memory-global-save-button"),
+  memoryGlobalReloadButton: query<HTMLButtonElement>("#memory-global-reload-button"),
+  memoryGlobalClearButton: query<HTMLButtonElement>("#memory-global-clear-button"),
+  memoryWorkspaceSaveButton: query<HTMLButtonElement>("#memory-workspace-save-button"),
+  memoryWorkspaceReloadButton: query<HTMLButtonElement>("#memory-workspace-reload-button"),
+  memoryWorkspaceClearButton: query<HTMLButtonElement>("#memory-workspace-clear-button"),
+  sidebarVaultTitle: query<HTMLElement>("#sidebar-vault-title"),
+  sidebarVaultSwitcher: query<HTMLButtonElement>("#sidebar-vault-switcher"),
+  sidebarVaultMenu: query<HTMLElement>("#sidebar-vault-menu"),
+  workspaceConnectionsButton: query<HTMLButtonElement>("#workspace-connections-button"),
   workspaceTabList: query<HTMLElement>("#workspace-tab-list"),
+  workspaceNewTabButton: query<HTMLButtonElement>("#workspace-new-tab-button"),
   workspaceActiveTabState: query<HTMLElement>("#workspace-active-tab-state"),
   workspaceViewBadge: query<HTMLElement>("#workspace-view-badge"),
+  workspaceBackButton: query<HTMLButtonElement>("#workspace-back-button"),
   folderList: query<HTMLUListElement>("#folder-list"),
   folderCount: query<HTMLElement>("#folder-count"),
   noteList: query<HTMLUListElement>("#note-list"),
@@ -255,6 +1048,7 @@ const elements: Elements = {
   noteContext: query<HTMLElement>("#note-context"),
   noteBacklinks: query<HTMLElement>("#note-backlinks"),
   noteEditor: query<HTMLTextAreaElement>("#note-editor"),
+  wikilinkSuggestions: query<HTMLElement>("#wikilink-suggestions"),
   notePreview: query<HTMLDivElement>("#note-preview"),
   noteMeta: query<HTMLElement>("#note-meta"),
   graphPane: query<HTMLElement>("#graph-pane"),
@@ -272,7 +1066,7 @@ const elements: Elements = {
   graphPathResult: query<HTMLElement>("#graph-path-result"),
   graphGlobalButton: query<HTMLButtonElement>("#graph-global-button"),
   graphLocalButton: query<HTMLButtonElement>("#graph-local-button"),
-  graphColorMode: query<HTMLSelectElement>("#graph-color-mode"),
+  graphColorModeButton: query<HTMLButtonElement>("#graph-color-mode-button"),
   graphFolderScopeButton: query<HTMLButtonElement>("#graph-folder-scope-button"),
   graphExistingOnlyButton: query<HTMLButtonElement>("#graph-existing-only-button"),
   graphCenterViewButton: query<HTMLButtonElement>("#graph-center-view-button"),
@@ -294,6 +1088,33 @@ const elements: Elements = {
   saveState: query<HTMLElement>("#save-state"),
   editorLayout: query<HTMLElement>("#editor-layout"),
   emptyNoteTemplate: query<HTMLTemplateElement>("#empty-note-template"),
+  connectionManager: query<HTMLElement>("#connection-manager"),
+  connectionManagerBackdrop: query<HTMLElement>("#connection-manager-backdrop"),
+  connectionManagerClose: query<HTMLButtonElement>("#connection-manager-close"),
+  connectionManagerList: query<HTMLElement>("#connection-manager-list"),
+  connectionManagerEmpty: query<HTMLElement>("#connection-manager-empty"),
+  connectionManagerForm: query<HTMLFormElement>("#connection-manager-form"),
+  connectionManagerTitle: query<HTMLElement>("#connection-manager-title"),
+  connectionManagerDescription: query<HTMLElement>("#connection-manager-description"),
+  connectionManagerKindHint: query<HTMLElement>("#connection-manager-kind-hint"),
+  connectionManagerRootField: query<HTMLElement>("#connection-manager-root-field"),
+  connectionManagerRootLabel: query<HTMLElement>("#connection-manager-root-label"),
+  connectionManagerRootHint: query<HTMLElement>("#connection-manager-root-hint"),
+  connectionManagerNameInput: query<HTMLInputElement>("#connection-manager-name"),
+  connectionManagerKindSelect: query<HTMLSelectElement>("#connection-manager-kind"),
+  connectionManagerRootPathInput: query<HTMLInputElement>("#connection-manager-root-path"),
+  connectionManagerCodeRootField: query<HTMLElement>("#connection-manager-code-root-field"),
+  connectionManagerCodeRootInput: query<HTMLInputElement>("#connection-manager-code-root"),
+  connectionManagerNotesRootField: query<HTMLElement>("#connection-manager-notes-root-field"),
+  connectionManagerNotesRootInput: query<HTMLInputElement>("#connection-manager-notes-root"),
+  connectionManagerDefaultCheckbox: query<HTMLInputElement>("#connection-manager-default"),
+  connectionManagerActivateCheckbox: query<HTMLInputElement>("#connection-manager-activate"),
+  connectionManagerError: query<HTMLElement>("#connection-manager-error"),
+  connectionManagerDeleteButton: query<HTMLButtonElement>("#connection-manager-delete"),
+  connectionManagerUseButton: query<HTMLButtonElement>("#connection-manager-use"),
+  connectionManagerResetButton: query<HTMLButtonElement>("#connection-manager-reset"),
+  connectionManagerSubmitButton: query<HTMLButtonElement>("#connection-manager-submit"),
+  connectionManagerCreateButton: query<HTMLButtonElement>("#connection-manager-create"),
   confirmDialog: query<HTMLElement>("#confirm-dialog"),
   confirmDialogBackdrop: query<HTMLElement>("#confirm-dialog-backdrop"),
   confirmDialogTitle: query<HTMLElement>("#confirm-dialog-title"),
@@ -306,6 +1127,8 @@ const elements: Elements = {
 let saveStateTimeout: number | null = null;
 let saveTimer: number | null = null;
 let pendingSaveNoteId: string | null = null;
+let globalMemorySaveTimer: number | null = null;
+let workspaceMemorySaveTimer: number | null = null;
 let saveSequence: Promise<boolean> = Promise.resolve(true);
 let workspacePollTimer: number | null = null;
 let saveInFlight = false;
@@ -320,12 +1143,11 @@ let sidebarResizePointerId: number | null = null;
 let sidebarResizeStartX = 0;
 let sidebarResizeStartWidth = DEFAULT_EXPLORER_WIDTH;
 let confirmDialogResolver: ((confirmed: boolean) => void) | null = null;
+let isRestoringNavigation = false;
 let explorerContextMenuTarget:
   | { type: "note"; noteId: string }
   | { type: "folder"; folderPath: string }
   | null = null;
-
-void bootstrap();
 
 function query<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -336,16 +1158,281 @@ function query<T extends Element>(selector: string): T {
   return element;
 }
 
+function resolveInitialLocale(): Locale {
+  try {
+    const stored = window.localStorage.getItem(LOCALE_STORAGE_KEY);
+    if (stored === "ru" || stored === "en") {
+      return stored;
+    }
+  } catch {
+    // Ignore localStorage access issues and fall back to browser hints.
+  }
+
+  const documentLocale = document.documentElement.lang?.trim().toLowerCase();
+  if (documentLocale === "ru" || documentLocale === "en") {
+    return documentLocale;
+  }
+
+  return navigator.language.toLowerCase().startsWith("ru") ? "ru" : "en";
+}
+
+function t(
+  key: string,
+  variables: Record<string, string | number> = {}
+): string {
+  const template = TRANSLATIONS[state.locale][key] ?? TRANSLATIONS.en[key] ?? key;
+  return template.replace(/\{(\w+)\}/g, (_match, token) => String(variables[token] ?? ""));
+}
+
+function persistLocalePreference(): void {
+  try {
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, state.locale);
+  } catch {
+    // Ignore persistence errors and keep locale in memory.
+  }
+}
+
+function resolveStoredActiveConnectionId(): string | null {
+  try {
+    const stored = window.localStorage.getItem(ACTIVE_CONNECTION_STORAGE_KEY)?.trim();
+    return stored ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistActiveConnectionPreference(connectionId: string | null): void {
+  try {
+    if (!connectionId) {
+      window.localStorage.removeItem(ACTIVE_CONNECTION_STORAGE_KEY);
+      return;
+    }
+
+    window.localStorage.setItem(ACTIVE_CONNECTION_STORAGE_KEY, connectionId);
+  } catch {
+    // Ignore storage failures; connection state still works for the current session.
+  }
+}
+
+function setLocale(locale: Locale): void {
+  if (state.locale === locale) {
+    return;
+  }
+
+  state.locale = locale;
+  persistLocalePreference();
+  render();
+}
+
+function toggleLocale(): void {
+  setLocale(state.locale === "ru" ? "en" : "ru");
+}
+
+function applyTranslations(): void {
+  document.documentElement.lang = state.locale;
+  document.title = t("app.title");
+
+  elements.languageToggleButton.textContent = t("app.language.toggle");
+  elements.languageToggleButton.title = t("app.language.switch");
+  elements.languageToggleButton.setAttribute("aria-label", t("app.language.switch"));
+
+  document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((element) => {
+    const key = element.dataset.i18n;
+    if (!key) {
+      return;
+    }
+
+    element.textContent = t(key);
+  });
+
+  document.querySelectorAll<HTMLElement>("[data-i18n-placeholder]").forEach((element) => {
+    const key = element.dataset.i18nPlaceholder;
+    if (!key || !("placeholder" in element)) {
+      return;
+    }
+
+    (element as HTMLInputElement | HTMLTextAreaElement).placeholder = t(key);
+  });
+
+  document.querySelectorAll<HTMLElement>("[data-i18n-title]").forEach((element) => {
+    const key = element.dataset.i18nTitle;
+    if (!key) {
+      return;
+    }
+
+    element.title = t(key);
+  });
+
+  document.querySelectorAll<HTMLElement>("[data-i18n-aria-label]").forEach((element) => {
+    const key = element.dataset.i18nAriaLabel;
+    if (!key) {
+      return;
+    }
+
+    element.setAttribute("aria-label", t(key));
+  });
+}
+
+function getRootLabel(): string {
+  return t("common.root");
+}
+
+function captureNavigationEntry(): NavigationEntry {
+  return {
+    view: state.view,
+    selectedNoteId: state.vault.selectedNoteId,
+    selectedFolderPath: state.vault.selectedFolderPath,
+    activeTabId: state.tabs.activeTabId,
+    connectionId: getActiveConnectionId() ?? null,
+    graph: {
+      mode: state.graph.mode,
+      folderScoped: state.graph.folderScoped,
+      existingFilesOnly: state.graph.existingFilesOnly,
+      colorMode: state.graph.colorMode,
+      sidebarCollapsed: state.graph.sidebarCollapsed,
+      selectedNodeId: state.graph.selectedNodeId,
+      panX: state.graph.panX,
+      panY: state.graph.panY,
+      zoom: state.graph.zoom,
+    },
+  };
+}
+
+function areNavigationEntriesEqual(left: NavigationEntry, right: NavigationEntry): boolean {
+  return left.view === right.view
+    && left.selectedNoteId === right.selectedNoteId
+    && left.selectedFolderPath === right.selectedFolderPath
+    && left.activeTabId === right.activeTabId
+    && left.connectionId === right.connectionId
+    && left.graph.mode === right.graph.mode
+    && left.graph.folderScoped === right.graph.folderScoped
+    && left.graph.existingFilesOnly === right.graph.existingFilesOnly
+    && left.graph.colorMode === right.graph.colorMode
+    && left.graph.sidebarCollapsed === right.graph.sidebarCollapsed
+    && left.graph.selectedNodeId === right.graph.selectedNodeId
+    && left.graph.panX === right.graph.panX
+    && left.graph.panY === right.graph.panY
+    && left.graph.zoom === right.graph.zoom;
+}
+
+function pushNavigationEntry(entry: NavigationEntry): void {
+  const lastEntry = state.navigation.backStack[state.navigation.backStack.length - 1];
+  if (lastEntry && areNavigationEntriesEqual(lastEntry, entry)) {
+    return;
+  }
+
+  state.navigation.backStack = [...state.navigation.backStack, entry].slice(-50);
+}
+
+function renderNavigationControls(): void {
+  elements.workspaceBackButton.disabled = state.navigation.backStack.length === 0;
+  elements.workspaceBackButton.title = t("workspace.back");
+  elements.workspaceBackButton.setAttribute("aria-label", t("workspace.back"));
+}
+
 async function bootstrap(): Promise<void> {
   hydrateShellPreferences();
+  applyTranslations();
   bindEvents();
   applyShellLayout();
-  setStatus("Загрузка vault...");
-  await reloadVault();
+  setStatus(t("status.loadingVault"));
+  await reloadVault(null, { preferredConnectionId: resolveStoredActiveConnectionId() });
+  await ensureMemoryLoaded();
   startWorkspacePolling();
 }
 
+async function navigateBack(): Promise<void> {
+  const target = state.navigation.backStack[state.navigation.backStack.length - 1];
+  if (!target || isRestoringNavigation) {
+    return;
+  }
+
+  commitCurrentTitleDraft();
+  const saved = await flushAllPendingSaves();
+  if (!saved) {
+    return;
+  }
+
+  state.navigation.backStack = state.navigation.backStack.slice(0, -1);
+  isRestoringNavigation = true;
+  try {
+    await restoreNavigationEntry(target);
+  } finally {
+    isRestoringNavigation = false;
+    renderNavigationControls();
+  }
+}
+
+async function restoreNavigationEntry(entry: NavigationEntry): Promise<void> {
+  if (entry.connectionId && entry.connectionId !== getActiveConnectionId()) {
+    state.workspace.activeConnectionId = entry.connectionId;
+    await reloadVault(entry.selectedNoteId, { preferredConnectionId: entry.connectionId });
+  }
+
+  state.graph.mode = entry.graph.mode;
+  state.graph.folderScoped = entry.graph.folderScoped;
+  state.graph.existingFilesOnly = entry.graph.existingFilesOnly;
+  state.graph.colorMode = entry.graph.colorMode;
+  state.graph.sidebarCollapsed = entry.graph.sidebarCollapsed;
+  state.graph.selectedNodeId = entry.graph.selectedNodeId;
+  state.graph.panX = entry.graph.panX;
+  state.graph.panY = entry.graph.panY;
+  state.graph.zoom = entry.graph.zoom;
+
+  const selectedNoteId = resolveSelection(entry.selectedNoteId, state.vault.notes);
+  state.vault.selectedNoteId = selectedNoteId;
+  state.vault.selectedFolderPath = entry.selectedFolderPath;
+
+  if (entry.view === "graph" || entry.view === "memory") {
+    state.view = entry.view;
+    if (entry.view !== "memory") {
+      rememberNoteView(entry.view);
+    }
+    render();
+    if (entry.view === "graph") {
+      void ensureGraphData();
+    }
+    return;
+  }
+
+  if (selectedNoteId) {
+    await openNote(selectedNoteId, {
+      nextView: entry.view,
+      historyMode: "skip",
+    });
+    return;
+  }
+
+  state.view = entry.view;
+  rememberNoteView(entry.view);
+  render();
+}
+
+async function navigateToView(
+  mode: ViewMode,
+  options: { historyMode?: "push" | "skip" } = {}
+): Promise<void> {
+  if (mode === state.view) {
+    return;
+  }
+
+  if (options.historyMode !== "skip" && !isRestoringNavigation) {
+    pushNavigationEntry(captureNavigationEntry());
+  }
+
+  state.view = mode;
+  rememberNoteView(mode);
+  render();
+  if (state.view === "graph") {
+    void ensureGraphData(true);
+  }
+}
+
 function bindEvents(): void {
+  elements.languageToggleButton.addEventListener("click", () => {
+    toggleLocale();
+  });
+
   elements.toggleExplorerButton.addEventListener("click", () => {
     toggleExplorer();
   });
@@ -401,6 +1488,20 @@ function bindEvents(): void {
     void handleCreateNote();
   });
 
+  elements.workspaceConnectionsButton.addEventListener("click", () => {
+    if (state.workspace.manager.open) {
+      closeConnectionManager();
+      return;
+    }
+
+    openConnectionManager();
+  });
+
+  elements.sidebarVaultSwitcher.addEventListener("click", () => {
+    state.workspace.switcherOpen = !state.workspace.switcherOpen;
+    renderWorkspaceConnections();
+  });
+
   elements.newFolderButton.addEventListener("click", () => {
     void handleCreateFolder();
   });
@@ -429,12 +1530,8 @@ function bindEvents(): void {
     setGraphMode("local");
   });
 
-  elements.graphColorMode.addEventListener("change", () => {
-    if (!isGraphColorMode(elements.graphColorMode.value)) {
-      return;
-    }
-
-    state.graph.colorMode = elements.graphColorMode.value;
+  elements.graphColorModeButton.addEventListener("click", () => {
+    state.graph.colorMode = getNextGraphColorMode(state.graph.colorMode);
     renderGraphView();
   });
 
@@ -510,6 +1607,206 @@ function bindEvents(): void {
     void handleRefreshVault();
   });
 
+  elements.memoryReloadAllButton.addEventListener("click", () => {
+    void handleReloadMemory(true);
+  });
+
+  elements.memoryGlobalEditor.addEventListener("input", () => {
+    updateMemoryContent("global", elements.memoryGlobalEditor.value);
+  });
+
+  elements.memoryWorkspaceEditor.addEventListener("input", () => {
+    updateMemoryContent("workspace", elements.memoryWorkspaceEditor.value);
+  });
+
+  elements.memoryGlobalSaveButton.addEventListener("click", () => {
+    void flushPendingMemorySaves({ scopes: ["global"], flash: true });
+  });
+
+  elements.memoryGlobalReloadButton.addEventListener("click", () => {
+    void reloadMemoryScope("global", { force: true });
+  });
+
+  elements.memoryGlobalClearButton.addEventListener("click", () => {
+    void clearMemoryDocument("global");
+  });
+
+  elements.memoryWorkspaceSaveButton.addEventListener("click", () => {
+    void flushPendingMemorySaves({ scopes: ["workspace"], flash: true });
+  });
+
+  elements.memoryWorkspaceReloadButton.addEventListener("click", () => {
+    void reloadMemoryScope("workspace", { force: true });
+  });
+
+  elements.memoryWorkspaceClearButton.addEventListener("click", () => {
+    void clearMemoryDocument("workspace");
+  });
+
+  elements.connectionManagerBackdrop.addEventListener("click", () => {
+    closeConnectionManager();
+  });
+
+  elements.connectionManagerClose.addEventListener("click", () => {
+    closeConnectionManager();
+  });
+
+  elements.connectionManagerCreateButton.addEventListener("click", () => {
+    startCreatingWorkspaceConnection();
+  });
+
+  elements.connectionManagerList.addEventListener("click", (event: MouseEvent) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const connectionId = target.closest<HTMLElement>("[data-connection-manager-id]")?.dataset.connectionManagerId?.trim();
+    if (!connectionId) {
+      return;
+    }
+
+    selectWorkspaceConnectionForEditing(connectionId);
+  });
+
+  elements.connectionManagerKindSelect.addEventListener("change", () => {
+    if (!isWorkspaceConnectionKind(elements.connectionManagerKindSelect.value)) {
+      return;
+    }
+
+    updateConnectionManagerKind(elements.connectionManagerKindSelect.value);
+  });
+
+  elements.connectionManagerNameInput.addEventListener("input", () => {
+    updateConnectionManagerDraft({ name: elements.connectionManagerNameInput.value });
+  });
+
+  elements.connectionManagerRootPathInput.addEventListener("input", () => {
+    updateConnectionManagerDraft({ rootPath: elements.connectionManagerRootPathInput.value });
+  });
+
+  elements.connectionManagerCodeRootInput.addEventListener("input", () => {
+    updateConnectionManagerDraft({ codeRoot: elements.connectionManagerCodeRootInput.value });
+  });
+
+  elements.connectionManagerNotesRootInput.addEventListener("input", () => {
+    updateConnectionManagerDraft({ notesRoot: elements.connectionManagerNotesRootInput.value });
+  });
+
+  elements.connectionManagerDefaultCheckbox.addEventListener("change", () => {
+    updateConnectionManagerDraft({ isDefault: elements.connectionManagerDefaultCheckbox.checked });
+  });
+
+  elements.connectionManagerActivateCheckbox.addEventListener("change", () => {
+    updateConnectionManagerDraft({ activateOnSave: elements.connectionManagerActivateCheckbox.checked });
+  });
+
+  elements.connectionManagerResetButton.addEventListener("click", () => {
+    resetConnectionManagerDraft();
+  });
+
+  elements.connectionManagerUseButton.addEventListener("click", () => {
+    void activateConnectionFromManager();
+  });
+
+  elements.connectionManagerDeleteButton.addEventListener("click", () => {
+    void deleteConnectionFromManager();
+  });
+
+  elements.connectionManagerForm.addEventListener("submit", (event: SubmitEvent) => {
+    event.preventDefault();
+    void saveConnectionFromManager();
+  });
+
+  elements.connectionManagerForm.addEventListener("click", (event: MouseEvent) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const presetKind = target.closest<HTMLElement>("[data-connection-preset]")?.dataset.connectionPreset;
+    if (isWorkspaceConnectionKind(presetKind)) {
+      startCreatingWorkspaceConnection(presetKind);
+      return;
+    }
+
+    const browseField = target.closest<HTMLElement>("[data-connection-path-browse]")?.dataset.connectionPathBrowse;
+    if (isConnectionPathField(browseField)) {
+      void browseConnectionPathField(browseField);
+      return;
+    }
+
+    const pasteField = target.closest<HTMLElement>("[data-connection-path-paste]")?.dataset.connectionPathPaste;
+    if (isConnectionPathField(pasteField)) {
+      void pasteConnectionPathField(pasteField);
+      return;
+    }
+
+    const clearField = target.closest<HTMLElement>("[data-connection-path-clear]")?.dataset.connectionPathClear;
+    if (isConnectionPathField(clearField)) {
+      clearConnectionPathField(clearField);
+    }
+  });
+
+  elements.connectionManagerForm.addEventListener("dragover", (event: DragEvent) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const field = target.closest<HTMLElement>("[data-connection-path-field]");
+    if (!field) {
+      return;
+    }
+
+    event.preventDefault();
+    field.classList.add("is-drop-target");
+  });
+
+  elements.connectionManagerForm.addEventListener("dragleave", (event: DragEvent) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const field = target.closest<HTMLElement>("[data-connection-path-field]");
+    if (!field) {
+      return;
+    }
+
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && field.contains(nextTarget)) {
+      return;
+    }
+
+    field.classList.remove("is-drop-target");
+  });
+
+  elements.connectionManagerForm.addEventListener("drop", (event: DragEvent) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const fieldContainer = target.closest<HTMLElement>("[data-connection-path-field]");
+    const field = fieldContainer?.dataset.connectionPathField;
+    if (!fieldContainer || !isConnectionPathField(field)) {
+      return;
+    }
+
+    event.preventDefault();
+    fieldContainer.classList.remove("is-drop-target");
+    const droppedPath = extractDroppedConnectionPath(event.dataTransfer);
+    if (!droppedPath) {
+      state.workspace.manager.error = t("connection.pathHelp");
+      renderConnectionManager();
+      return;
+    }
+
+    applyConnectionPathField(field, droppedPath);
+    flashStatus(t("status.pathApplied"));
+  });
+
   elements.confirmDialogCancel.addEventListener("click", () => {
     resolveConfirmDialog(false);
   });
@@ -549,6 +1846,79 @@ function bindEvents(): void {
 
   elements.noteEditor.addEventListener("input", () => {
     updateNoteContent(elements.noteEditor.value);
+    updateWikilinkSuggestions();
+  });
+
+  elements.noteEditor.addEventListener("click", () => {
+    updateWikilinkSuggestions();
+  });
+
+  elements.noteEditor.addEventListener("keyup", (event: KeyboardEvent) => {
+    if (event.key.startsWith("Arrow") || event.key === "Enter" || event.key === "Tab" || event.key === "Escape") {
+      return;
+    }
+
+    updateWikilinkSuggestions();
+  });
+
+  elements.noteEditor.addEventListener("blur", () => {
+    closeWikilinkSuggestions();
+  });
+
+  elements.noteEditor.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (!state.editor.wikilink.items.length) {
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      state.editor.wikilink.activeIndex = (state.editor.wikilink.activeIndex + 1) % state.editor.wikilink.items.length;
+      renderWikilinkSuggestions();
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      state.editor.wikilink.activeIndex = (state.editor.wikilink.activeIndex - 1 + state.editor.wikilink.items.length)
+        % state.editor.wikilink.items.length;
+      renderWikilinkSuggestions();
+      return;
+    }
+
+    if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      applyActiveWikilinkSuggestion();
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeWikilinkSuggestions();
+    }
+  });
+
+  elements.wikilinkSuggestions.addEventListener("mousedown", (event: MouseEvent) => {
+    event.preventDefault();
+  });
+
+  elements.wikilinkSuggestions.addEventListener("click", (event: MouseEvent) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const noteId = target.closest<HTMLElement>("[data-wikilink-note-id]")?.dataset.wikilinkNoteId?.trim();
+    if (!noteId) {
+      return;
+    }
+
+    const index = state.editor.wikilink.items.findIndex((item) => item.noteId === noteId);
+    if (index === -1) {
+      return;
+    }
+
+    state.editor.wikilink.activeIndex = index;
+    applyActiveWikilinkSuggestion();
   });
 
   elements.searchInput.addEventListener("input", () => {
@@ -583,6 +1953,14 @@ function bindEvents(): void {
       event.preventDefault();
       void activateWorkspaceTab(activateNoteId);
     }
+  });
+
+  elements.workspaceNewTabButton.addEventListener("click", () => {
+    void openSelectedNoteInNewTab();
+  });
+
+  elements.workspaceBackButton.addEventListener("click", () => {
+    void navigateBack();
   });
 
   elements.workspaceTabList.addEventListener("dragstart", (event: DragEvent) => {
@@ -662,12 +2040,7 @@ function bindEvents(): void {
         return;
       }
 
-      state.view = mode;
-      rememberNoteView(mode);
-      renderView();
-      if (state.view === "graph") {
-        void ensureGraphData(true);
-      }
+      void navigateToView(mode);
     });
   });
 
@@ -765,6 +2138,16 @@ function bindEvents(): void {
     if (graphDragPointerId === null) {
       elements.graphCanvas.classList.remove("is-dragging");
     }
+  });
+
+  elements.graphCanvas.addEventListener("click", () => {
+    if (isGraphDragging || state.graph.selectedNodeId === null) {
+      return;
+    }
+
+    closeGraphNodeMenu();
+    state.graph.selectedNodeId = null;
+    renderGraphCanvas();
   });
 
   elements.graphCanvas.addEventListener("wheel", (event: WheelEvent) => {
@@ -904,7 +2287,14 @@ function bindEvents(): void {
       return;
     }
 
+    if (!elements.connectionManager.hidden && event.key === "Escape") {
+      event.preventDefault();
+      closeConnectionManager();
+      return;
+    }
+
     if (event.key === "Escape") {
+      closeSidebarVaultSwitcher();
       closeGraphNodeMenu();
       closeExplorerContextMenu();
     }
@@ -913,7 +2303,7 @@ function bindEvents(): void {
 
     if (meta && event.key.toLowerCase() === "s") {
       event.preventDefault();
-      void flushPendingSave({ flash: true });
+      void flushAllPendingSaves({ flash: true });
     }
 
     if (meta && event.key.toLowerCase() === "n") {
@@ -930,6 +2320,14 @@ function bindEvents(): void {
     const target = event.target;
     if (!(target instanceof Node)) {
       return;
+    }
+
+    if (
+      state.workspace.switcherOpen
+      && !elements.sidebarVaultSwitcher.contains(target)
+      && !elements.sidebarVaultMenu.contains(target)
+    ) {
+      closeSidebarVaultSwitcher();
     }
 
     if (!elements.graphNodeMenu.hidden && !elements.graphNodeMenu.contains(target)) {
@@ -967,6 +2365,22 @@ function bindEvents(): void {
     }
 
     void handleExplorerContextMenuAction(action);
+  });
+
+  elements.sidebarVaultMenu.addEventListener("click", (event: MouseEvent) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const connectionId = target.closest<HTMLElement>("[data-sidebar-connection-id]")?.dataset.sidebarConnectionId?.trim();
+    if (!connectionId || connectionId === getActiveConnectionId()) {
+      closeSidebarVaultSwitcher();
+      return;
+    }
+
+    closeSidebarVaultSwitcher();
+    void handleConnectionSelectionChange(connectionId);
   });
 
   window.addEventListener("beforeunload", (event) => {
@@ -1015,10 +2429,14 @@ function applyShellLayout(): void {
   elements.appShell.dataset.explorerCollapsed = String(state.shell.explorerCollapsed);
   elements.appShell.style.setProperty("--sidebar-width", `${state.shell.explorerWidth}px`);
   elements.toggleExplorerButton.classList.toggle("is-active", state.shell.explorerCollapsed);
-  elements.toggleExplorerButton.title = state.shell.explorerCollapsed ? "Expand explorer" : "Collapse explorer";
+  elements.toggleExplorerButton.title = state.shell.explorerCollapsed
+    ? t("activity.expandExplorer")
+    : t("activity.collapseExplorer");
   elements.toggleExplorerButton.setAttribute(
     "aria-label",
-    state.shell.explorerCollapsed ? "Expand explorer" : "Collapse explorer"
+    state.shell.explorerCollapsed
+      ? t("activity.expandExplorer")
+      : t("activity.collapseExplorer")
   );
   elements.toggleExplorerGlyph.textContent = state.shell.explorerCollapsed ? "⇥" : "⇤";
 }
@@ -1082,9 +2500,9 @@ function renderGraphNodeMenu(): void {
   elements.graphNodeMenu.hidden = false;
   elements.graphNodeMenu.innerHTML = `
     <div class="graph-node-menu__title">${escapeHtml(getDisplayTitle(note))}</div>
-    <button type="button" class="graph-node-menu__item" data-graph-menu-action="open">Open</button>
-    <button type="button" class="graph-node-menu__item" data-graph-menu-action="reveal">Reveal in list</button>
-    <button type="button" class="graph-node-menu__item" data-graph-menu-action="copy">Copy wikilink</button>
+    <button type="button" class="graph-node-menu__item" data-graph-menu-action="open">${escapeHtml(t("common.open"))}</button>
+    <button type="button" class="graph-node-menu__item" data-graph-menu-action="reveal">${escapeHtml(t("graph.revealInList"))}</button>
+    <button type="button" class="graph-node-menu__item" data-graph-menu-action="copy">${escapeHtml(t("graph.copyWikilink"))}</button>
   `;
 
   const menuWidth = 192;
@@ -1118,17 +2536,17 @@ function renderExplorerContextMenu(clientX: number, clientY: number): void {
 
     elements.explorerContextMenu.innerHTML = `
       <div class="graph-node-menu__title">${escapeHtml(getDisplayTitle(note))}</div>
-      <button type="button" class="graph-node-menu__item" data-explorer-menu-action="copy">Копировать</button>
-      <button type="button" class="graph-node-menu__item" data-explorer-menu-action="rename">Переименовать</button>
-      <button type="button" class="graph-node-menu__item" data-explorer-menu-action="delete">Удалить</button>
+      <button type="button" class="graph-node-menu__item" data-explorer-menu-action="copy">${escapeHtml(t("common.copy"))}</button>
+      <button type="button" class="graph-node-menu__item" data-explorer-menu-action="rename">${escapeHtml(t("common.rename"))}</button>
+      <button type="button" class="graph-node-menu__item" data-explorer-menu-action="delete">${escapeHtml(t("common.delete"))}</button>
     `;
   } else {
-    const label = target.folderPath || "Root";
+    const label = target.folderPath || getRootLabel();
     elements.explorerContextMenu.innerHTML = `
       <div class="graph-node-menu__title">${escapeHtml(label)}</div>
-      <button type="button" class="graph-node-menu__item" data-explorer-menu-action="copy">Копировать</button>
-      <button type="button" class="graph-node-menu__item" data-explorer-menu-action="rename">Переименовать</button>
-      <button type="button" class="graph-node-menu__item" data-explorer-menu-action="delete">Удалить</button>
+      <button type="button" class="graph-node-menu__item" data-explorer-menu-action="copy">${escapeHtml(t("common.copy"))}</button>
+      <button type="button" class="graph-node-menu__item" data-explorer-menu-action="rename">${escapeHtml(t("common.rename"))}</button>
+      <button type="button" class="graph-node-menu__item" data-explorer-menu-action="delete">${escapeHtml(t("common.delete"))}</button>
     `;
   }
 
@@ -1201,7 +2619,10 @@ async function handleExplorerContextMenuAction(action: string): Promise<void> {
   renderNoteList();
 
   if (action === "copy") {
-    await copyTextToClipboard(target.folderPath || "Root", `Скопировано: ${target.folderPath || "Root"}`);
+    await copyTextToClipboard(
+      target.folderPath || getRootLabel(),
+      t("status.copyFolder", { value: target.folderPath || getRootLabel() })
+    );
     return;
   }
 
@@ -1243,7 +2664,7 @@ function revealNoteInList(noteId: string): void {
     }, 1400);
   });
 
-  flashStatus(`Показано в списке: ${getDisplayTitle(note)}`);
+  flashStatus(t("status.shownInList", { title: getDisplayTitle(note) }));
 }
 
 async function copyGraphNodeWikilink(noteId: string): Promise<void> {
@@ -1253,10 +2674,13 @@ async function copyGraphNodeWikilink(noteId: string): Promise<void> {
   }
 
   try {
-    await copyTextToClipboard(`[[${getDisplayTitle(note)}]]`, `Скопировано: [[${getDisplayTitle(note)}]]`);
+    await copyTextToClipboard(
+      `[[${getDisplayTitle(note)}]]`,
+      t("status.copyWikilink", { title: getDisplayTitle(note) })
+    );
   } catch (error) {
     console.error(error);
-    flashStatus("Не удалось скопировать wikilink");
+    flashStatus(t("status.copyFailed"));
   }
 }
 
@@ -1289,7 +2713,7 @@ function confirmAction(options: {
 
   elements.confirmDialogTitle.textContent = options.title;
   elements.confirmDialogDescription.textContent = options.description;
-  elements.confirmDialogConfirm.textContent = options.confirmLabel ?? "Удалить";
+  elements.confirmDialogConfirm.textContent = options.confirmLabel ?? t("common.delete");
   elements.confirmDialog.hidden = false;
 
   return new Promise<boolean>((resolve) => {
@@ -1312,50 +2736,960 @@ function resolveConfirmDialog(confirmed: boolean): void {
 }
 
 function isViewMode(value: string | undefined): value is ViewMode {
-  return value === "split" || value === "editor" || value === "preview" || value === "graph";
+  return value === "split" || value === "editor" || value === "preview" || value === "graph" || value === "memory";
 }
 
 function isGraphColorMode(value: string | undefined): value is GraphColorMode {
   return value === "none" || value === "folder" || value === "tag" || value === "cluster";
 }
 
+function getNextGraphColorMode(mode: GraphColorMode): GraphColorMode {
+  if (mode === "none") {
+    return "folder";
+  }
+
+  if (mode === "folder") {
+    return "tag";
+  }
+
+  if (mode === "tag") {
+    return "cluster";
+  }
+
+  return "none";
+}
+
+function getGraphColorModeLabel(mode: GraphColorMode): string {
+  if (mode === "folder") {
+    return t("graph.color.folder");
+  }
+
+  if (mode === "tag") {
+    return t("graph.color.tag");
+  }
+
+  if (mode === "cluster") {
+    return t("graph.color.cluster");
+  }
+
+  return t("graph.color.none");
+}
+
+function getGraphColorModeGlyph(mode: GraphColorMode): string {
+  if (mode === "folder") {
+    return "▦";
+  }
+
+  if (mode === "tag") {
+    return "#";
+  }
+
+  if (mode === "cluster") {
+    return "◍";
+  }
+
+  return "◌";
+}
+
 function getViewModeLabel(view: ViewMode): string {
   if (view === "split") {
-    return "Split";
+    return t("view.split");
   }
 
   if (view === "editor") {
-    return "Editor";
+    return t("view.editor");
   }
 
   if (view === "preview") {
-    return "Preview";
+    return t("view.preview");
   }
 
-  return "Graph";
+  if (view === "memory") {
+    return t("view.memory");
+  }
+
+  return t("view.graph");
 }
 
 async function handleRefreshVault(): Promise<void> {
   commitCurrentTitleDraft();
-  const saved = await flushPendingSave();
+  const saved = await flushAllPendingSaves();
   if (!saved) {
     return;
   }
-  setStatus("Обновление vault...");
+  setStatus(t("status.refreshingVault"));
   await reloadVault(state.vault.selectedNoteId);
-  flashStatus("Синхронизировано");
+  flashStatus(t("status.synced"));
 }
 
-async function reloadVault(preferredNoteId: string | null = state.vault.selectedNoteId): Promise<void> {
+function createEmptyConnectionDraft(): WorkspaceConnectionDraft {
+  return {
+    name: "",
+    kind: "vault",
+    rootPath: "",
+    codeRoot: "",
+    notesRoot: "",
+    isDefault: false,
+    activateOnSave: true,
+  };
+}
+
+function createEmptyMemoryDocument(scope: "global" | "workspace"): MemoryDocumentState {
+  return {
+    scope,
+    connectionId: null,
+    connectionName: null,
+    content: "",
+    savedContent: "",
+    exists: false,
+    createdAt: null,
+    updatedAt: null,
+    loading: false,
+    saving: false,
+    error: null,
+  };
+}
+
+function isConnectionPathField(value: string | undefined): value is ConnectionPathField {
+  return value === "rootPath" || value === "codeRoot" || value === "notesRoot";
+}
+
+function createConnectionDraft(connection: WorkspaceConnection): WorkspaceConnectionDraft {
+  return {
+    name: connection.name,
+    kind: connection.kind,
+    rootPath: connection.notesRoot ?? connection.rootPath ?? "",
+    codeRoot: connection.codeRoot ?? "",
+    notesRoot: connection.notesRoot ?? "",
+    isDefault: connection.isDefault === true,
+    activateOnSave: false,
+  };
+}
+
+function isWorkspaceConnectionKind(value: string | undefined): value is WorkspaceConnectionKind {
+  return value === "vault" || value === "repo_docs" || value === "code_repo" || value === "docs_folder";
+}
+
+function getWorkspaceConnectionKindLabel(kind: WorkspaceConnectionKind): string {
+  if (kind === "vault") {
+    return "vault";
+  }
+
+  if (kind === "repo_docs") {
+    return "repo_docs";
+  }
+
+  if (kind === "code_repo") {
+    return "code_repo";
+  }
+
+  return "docs_folder";
+}
+
+function getWorkspaceConnectionKindDescription(kind: WorkspaceConnectionKind): string {
+  if (kind === "vault") {
+    return t("connection.kindHint.vault");
+  }
+
+  if (kind === "repo_docs") {
+    return t("connection.kindHint.repo_docs");
+  }
+
+  if (kind === "code_repo") {
+    return t("connection.kindHint.code_repo");
+  }
+
+  return t("connection.kindHint.docs_folder");
+}
+
+function getWorkspaceConnectionNamePlaceholder(kind: WorkspaceConnectionKind): string {
+  if (kind === "vault") {
+    return t("connection.connectVault");
+  }
+
+  if (kind === "repo_docs") {
+    return t("connection.connectRepoDocs");
+  }
+
+  if (kind === "code_repo") {
+    return t("connection.connectCodeRepo");
+  }
+
+  return t("connection.connectDocsFolder");
+}
+
+function getWorkspaceConnectionPathPlaceholders(kind: WorkspaceConnectionKind): {
+  rootPath: string;
+  codeRoot: string;
+  notesRoot: string;
+} {
+  if (kind === "vault") {
+    return {
+      rootPath: "/absolute/path/to/vault",
+      codeRoot: "/absolute/path/to/repo",
+      notesRoot: "/absolute/path/to/vault",
+    };
+  }
+
+  if (kind === "repo_docs") {
+    return {
+      rootPath: "/absolute/path/to/repo/docs",
+      codeRoot: "/absolute/path/to/repo",
+      notesRoot: "/absolute/path/to/repo/docs",
+    };
+  }
+
+  if (kind === "code_repo") {
+    return {
+      rootPath: "/absolute/path/to/repo",
+      codeRoot: "/absolute/path/to/repo",
+      notesRoot: "/absolute/path/to/repo/docs",
+    };
+  }
+
+  return {
+    rootPath: "/absolute/path/to/docs",
+    codeRoot: "/absolute/path/to/repo",
+    notesRoot: "/absolute/path/to/docs",
+  };
+}
+
+function getConnectionPathBrowseTitle(field: ConnectionPathField, draft: WorkspaceConnectionDraft): string {
+  if (field === "codeRoot") {
+    return t("connection.codeRoot");
+  }
+
+  if (field === "notesRoot") {
+    return t("connection.notesRoot");
+  }
+
+  if (draft.kind === "vault") {
+    return t("connection.vaultRoot");
+  }
+
+  if (draft.kind === "repo_docs") {
+    return t("connection.docsRoot");
+  }
+
+  return t("connection.folderRoot");
+}
+
+function getConnectionRootFieldMeta(kind: WorkspaceConnectionKind): { label: string; hint: string } {
+  if (kind === "vault") {
+    return {
+      label: t("connection.vaultRoot"),
+      hint: t("connection.vaultRootHint"),
+    };
+  }
+
+  if (kind === "repo_docs") {
+    return {
+      label: t("connection.docsRoot"),
+      hint: t("connection.repoDocsRootHint"),
+    };
+  }
+
+  return {
+    label: t("connection.folderRoot"),
+    hint: t("connection.folderRootHint"),
+  };
+}
+
+function normalizeConnectionManagerSelection(): void {
+  if (state.workspace.manager.mode === "create") {
+    return;
+  }
+
+  const connections = state.workspace.connections;
+  const preferredId = state.workspace.manager.selectedConnectionId;
+  const nextConnection = connections.find((connection) => connection.id === preferredId)
+    ?? getActiveConnection()
+    ?? connections[0]
+    ?? null;
+
+  if (!nextConnection) {
+    state.workspace.manager.selectedConnectionId = null;
+    return;
+  }
+
+  if (state.workspace.manager.selectedConnectionId === nextConnection.id) {
+    return;
+  }
+
+  state.workspace.manager.selectedConnectionId = nextConnection.id;
+  state.workspace.manager.draft = createConnectionDraft(nextConnection);
+}
+
+function getActiveConnectionId(): string | undefined {
+  return state.workspace.activeConnectionId ?? state.workspace.connections[0]?.id;
+}
+
+function getActiveConnection(): WorkspaceConnection | null {
+  const activeConnectionId = getActiveConnectionId();
+  if (!activeConnectionId) {
+    return null;
+  }
+
+  return state.workspace.connections.find((connection) => connection.id === activeConnectionId) ?? null;
+}
+
+function getConnectionLabel(connection: WorkspaceConnection): string {
+  if (connection.kind === "code_repo" && connection.codeRoot?.trim()) {
+    return `${connection.name} · ${t("connection.kindSuffix.codeRepo")}`;
+  }
+
+  if (connection.kind === "docs_folder") {
+    return `${connection.name} · ${t("connection.kindSuffix.docs")}`;
+  }
+
+  if (connection.kind === "repo_docs") {
+    return `${connection.name} · ${t("connection.kindSuffix.repoDocs")}`;
+  }
+
+  return connection.name;
+}
+
+function getConnectionNotesRoot(connection: WorkspaceConnection): string {
+  return connection.notesRoot?.trim() || connection.rootPath?.trim() || connection.codeRoot?.trim() || "";
+}
+
+function openConnectionManager(): void {
+  closeSidebarVaultSwitcher();
+  normalizeConnectionManagerSelection();
+  if (!state.workspace.manager.selectedConnectionId && state.workspace.connections.length > 0) {
+    const activeConnection = getActiveConnection() ?? state.workspace.connections[0];
+    state.workspace.manager.selectedConnectionId = activeConnection?.id ?? null;
+    if (activeConnection) {
+      state.workspace.manager.mode = "edit";
+      state.workspace.manager.draft = createConnectionDraft(activeConnection);
+    }
+  }
+
+  state.workspace.manager.open = true;
+  state.workspace.manager.error = null;
+  renderConnectionManager();
+
+  window.requestAnimationFrame(() => {
+    elements.connectionManagerNameInput.focus();
+    if (state.workspace.manager.mode === "create") {
+      elements.connectionManagerNameInput.select();
+    }
+  });
+}
+
+function closeConnectionManager(): void {
+  state.workspace.manager.open = false;
+  state.workspace.manager.error = null;
+  renderConnectionManager();
+}
+
+function startCreatingWorkspaceConnection(kind: WorkspaceConnectionKind = "vault"): void {
+  closeSidebarVaultSwitcher();
+  state.workspace.manager.open = true;
+  state.workspace.manager.mode = "create";
+  state.workspace.manager.selectedConnectionId = null;
+  state.workspace.manager.draft = {
+    ...createEmptyConnectionDraft(),
+    kind,
+  };
+  state.workspace.manager.error = null;
+  renderConnectionManager();
+
+  window.requestAnimationFrame(() => {
+    elements.connectionManagerNameInput.focus();
+  });
+}
+
+function selectWorkspaceConnectionForEditing(connectionId: string): void {
+  const connection = state.workspace.connections.find((item) => item.id === connectionId);
+  if (!connection) {
+    return;
+  }
+
+  state.workspace.manager.open = true;
+  state.workspace.manager.mode = "edit";
+  state.workspace.manager.selectedConnectionId = connection.id;
+  state.workspace.manager.draft = createConnectionDraft(connection);
+  state.workspace.manager.error = null;
+  renderConnectionManager();
+}
+
+function updateConnectionManagerDraft(patch: Partial<WorkspaceConnectionDraft>): void {
+  state.workspace.manager.draft = {
+    ...state.workspace.manager.draft,
+    ...patch,
+  };
+  state.workspace.manager.error = null;
+  renderConnectionManager();
+}
+
+function updateConnectionManagerKind(kind: WorkspaceConnectionKind): void {
+  const previousDraft = state.workspace.manager.draft;
+  const nextDraft: WorkspaceConnectionDraft = {
+    ...previousDraft,
+    kind,
+  };
+
+  if (kind === "code_repo") {
+    nextDraft.codeRoot = previousDraft.codeRoot || previousDraft.rootPath;
+    nextDraft.notesRoot = previousDraft.notesRoot || previousDraft.rootPath || previousDraft.codeRoot;
+  } else if (!previousDraft.rootPath) {
+    nextDraft.rootPath = previousDraft.notesRoot || previousDraft.codeRoot;
+  }
+
+  state.workspace.manager.draft = nextDraft;
+  state.workspace.manager.error = null;
+  renderConnectionManager();
+}
+
+function inferConnectionNameFromPath(targetPath: string): string {
+  const normalizedPath = targetPath.replace(/[\\/]+$/, "");
+  const baseName = normalizedPath.split(/[/\\]/).filter(Boolean).pop() ?? targetPath;
+  return baseName
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function applyConnectionPathField(field: ConnectionPathField, nextPath: string): void {
+  const normalizedPath = normalizeFilesystemPath(nextPath);
+  if (!normalizedPath) {
+    return;
+  }
+
+  const patch: Partial<WorkspaceConnectionDraft> = {
+    [field]: normalizedPath,
+  };
+
+  if (!state.workspace.manager.draft.name.trim()) {
+    patch.name = inferConnectionNameFromPath(normalizedPath);
+  }
+
+  updateConnectionManagerDraft(patch);
+}
+
+function clearConnectionPathField(field: ConnectionPathField): void {
+  updateConnectionManagerDraft({ [field]: "" });
+}
+
+async function pasteConnectionPathField(field: ConnectionPathField): Promise<void> {
   try {
-    const [snapshot, folders] = await Promise.all([
-      obsidianApp.sync(preferredNoteId),
-      workspaceClient.listFolders(),
+    const rawValue = await navigator.clipboard.readText();
+    const normalizedPath = normalizeFilesystemPath(rawValue);
+    if (!normalizedPath) {
+      state.workspace.manager.error = t("error.invalidClipboardPath");
+      renderConnectionManager();
+      return;
+    }
+
+    applyConnectionPathField(field, normalizedPath);
+    flashStatus(t("status.pathPasted"));
+  } catch (error) {
+    console.error(error);
+    state.workspace.manager.error = t("error.readClipboard");
+    renderConnectionManager();
+  }
+}
+
+async function browseConnectionPathField(field: ConnectionPathField): Promise<void> {
+  try {
+    const selectedPath = await api.pickDirectory({
+      title: getConnectionPathBrowseTitle(field, state.workspace.manager.draft),
+      defaultPath: state.workspace.manager.draft[field].trim() || undefined,
+    });
+    if (!selectedPath) {
+      return;
+    }
+
+    applyConnectionPathField(field, selectedPath);
+    flashStatus(t("status.folderChosen"));
+  } catch (error) {
+    console.error(error);
+    state.workspace.manager.error = getErrorMessage(error, t("error.pickDirectory"));
+    renderConnectionManager();
+  }
+}
+
+function normalizeFilesystemPath(rawValue: string): string | null {
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const candidates = trimmed
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0 && !value.startsWith("#"));
+
+  for (const candidate of candidates) {
+    const normalized = normalizeFilesystemPathCandidate(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
+function normalizeFilesystemPathCandidate(value: string): string | null {
+  const unquoted = value.replace(/^['"]|['"]$/g, "").trim();
+  if (!unquoted) {
+    return null;
+  }
+
+  if (unquoted.startsWith("file://")) {
+    try {
+      const url = new URL(unquoted);
+      if (url.protocol !== "file:") {
+        return null;
+      }
+
+      let pathname = decodeURIComponent(url.pathname);
+      if (/^\/[A-Za-z]:\//.test(pathname)) {
+        pathname = pathname.slice(1);
+      }
+
+      if (url.host && url.host !== "localhost") {
+        return `//${url.host}${pathname}`;
+      }
+
+      return pathname || null;
+    } catch {
+      return null;
+    }
+  }
+
+  if (unquoted.startsWith("/") || /^[A-Za-z]:[\\/]/.test(unquoted) || unquoted.startsWith("\\\\")) {
+    return unquoted;
+  }
+
+  return null;
+}
+
+function extractDroppedConnectionPath(dataTransfer: DataTransfer | null): string | null {
+  if (!dataTransfer) {
+    return null;
+  }
+
+  const uriList = dataTransfer.getData("text/uri-list");
+  const fromUriList = normalizeFilesystemPath(uriList);
+  if (fromUriList) {
+    return fromUriList;
+  }
+
+  const text = dataTransfer.getData("text/plain");
+  const fromText = normalizeFilesystemPath(text);
+  if (fromText) {
+    return fromText;
+  }
+
+  const firstFile = dataTransfer.files.item(0) as (File & { path?: string }) | null;
+  if (firstFile?.path) {
+    return normalizeFilesystemPath(firstFile.path);
+  }
+
+  return null;
+}
+
+function resetConnectionManagerDraft(): void {
+  if (state.workspace.manager.mode === "create") {
+    state.workspace.manager.draft = createEmptyConnectionDraft();
+  } else {
+    normalizeConnectionManagerSelection();
+    const selectedConnection = state.workspace.connections.find((item) => item.id === state.workspace.manager.selectedConnectionId);
+    if (!selectedConnection) {
+      return;
+    }
+
+    state.workspace.manager.draft = createConnectionDraft(selectedConnection);
+  }
+
+  state.workspace.manager.error = null;
+  renderConnectionManager();
+}
+
+function getConnectionManagerSelectedConnection(): WorkspaceConnection | null {
+  if (state.workspace.manager.mode !== "edit") {
+    return null;
+  }
+
+  return state.workspace.connections.find((item) => item.id === state.workspace.manager.selectedConnectionId) ?? null;
+}
+
+function validateConnectionDraft(draft: WorkspaceConnectionDraft): string | null {
+  if (!draft.name.trim()) {
+    return t("error.workspaceNameRequired");
+  }
+
+  if (draft.kind === "code_repo") {
+    if (!draft.codeRoot.trim()) {
+      return t("error.codeRootRequired");
+    }
+
+    if (!draft.notesRoot.trim()) {
+      return t("error.notesRootRequired");
+    }
+
+    return null;
+  }
+
+  if (!draft.rootPath.trim()) {
+    return t("error.rootPathRequired");
+  }
+
+  return null;
+}
+
+function buildWorkspaceConnectionPayload(draft: WorkspaceConnectionDraft): {
+  name: string;
+  kind: WorkspaceConnectionKind;
+  rootPath?: string;
+  codeRoot?: string;
+  notesRoot?: string;
+  isDefault: boolean;
+} {
+  if (draft.kind === "code_repo") {
+    return {
+      name: draft.name.trim(),
+      kind: draft.kind,
+      codeRoot: draft.codeRoot.trim(),
+      notesRoot: draft.notesRoot.trim(),
+      isDefault: draft.isDefault,
+    };
+  }
+
+  return {
+    name: draft.name.trim(),
+    kind: draft.kind,
+    rootPath: draft.rootPath.trim(),
+    isDefault: draft.isDefault,
+  };
+}
+
+async function saveConnectionFromManager(): Promise<void> {
+  const validationError = validateConnectionDraft(state.workspace.manager.draft);
+  if (validationError) {
+    state.workspace.manager.error = validationError;
+    renderConnectionManager();
+    return;
+  }
+
+  commitCurrentTitleDraft();
+  const saved = await flushAllPendingSaves();
+  if (!saved) {
+    return;
+  }
+
+  const selectedConnection = getConnectionManagerSelectedConnection();
+  const mode = state.workspace.manager.mode;
+  if (mode === "edit" && !selectedConnection) {
+    state.workspace.manager.error = t("error.connectionMissing");
+    renderConnectionManager();
+    return;
+  }
+
+  state.workspace.manager.saving = true;
+  state.workspace.manager.error = null;
+  renderConnectionManager();
+
+  try {
+    const payload = buildWorkspaceConnectionPayload(state.workspace.manager.draft);
+    const connection = mode === "create"
+      ? await api.createWorkspaceConnection(payload)
+      : await api.updateWorkspaceConnection(selectedConnection!.id, payload);
+    const preferredConnectionId = state.workspace.manager.draft.activateOnSave
+      ? connection.id
+      : getActiveConnectionId() ?? connection.id;
+    await reloadVault(state.vault.selectedNoteId, { preferredConnectionId });
+    closeConnectionManager();
+    flashStatus(mode === "create" ? t("status.workspaceConnected") : t("status.workspaceUpdated"));
+  } catch (error) {
+    console.error(error);
+    state.workspace.manager.error = getErrorMessage(error, t("error.connectionSave"));
+    renderConnectionManager();
+  } finally {
+    state.workspace.manager.saving = false;
+    renderConnectionManager();
+  }
+}
+
+async function activateConnectionFromManager(): Promise<void> {
+  const connection = getConnectionManagerSelectedConnection();
+  if (!connection || connection.id === getActiveConnectionId()) {
+    return;
+  }
+
+  await handleConnectionSelectionChange(connection.id);
+  renderConnectionManager();
+}
+
+async function deleteConnectionFromManager(): Promise<void> {
+  const connection = getConnectionManagerSelectedConnection();
+  if (!connection) {
+    return;
+  }
+
+  const confirmed = await confirmAction({
+    title: t("confirm.deleteConnectionTitle", { name: connection.name }),
+    description: connection.isDefault
+      ? t("confirm.deleteConnectionDefault")
+      : t("confirm.deleteConnectionDescription"),
+    confirmLabel: t("common.delete"),
+  });
+  if (!confirmed || connection.isDefault) {
+    return;
+  }
+
+  commitCurrentTitleDraft();
+  const saved = await flushAllPendingSaves();
+  if (!saved) {
+    return;
+  }
+
+  state.workspace.manager.saving = true;
+  state.workspace.manager.error = null;
+  renderConnectionManager();
+
+  try {
+    await api.deleteWorkspaceConnection(connection.id);
+    const fallbackConnection = state.workspace.connections.find((item) => item.id !== connection.id) ?? null;
+    const preferredConnectionId = getActiveConnectionId() === connection.id
+      ? fallbackConnection?.id ?? null
+      : getActiveConnectionId() ?? fallbackConnection?.id ?? null;
+    await reloadVault(null, { preferredConnectionId });
+
+    const nextSelection = state.workspace.connections.find((item) => item.id === preferredConnectionId)
+      ?? getActiveConnection()
+      ?? state.workspace.connections[0]
+      ?? null;
+    if (nextSelection) {
+      state.workspace.manager.mode = "edit";
+      state.workspace.manager.selectedConnectionId = nextSelection.id;
+      state.workspace.manager.draft = createConnectionDraft(nextSelection);
+    } else {
+      state.workspace.manager.mode = "create";
+      state.workspace.manager.selectedConnectionId = null;
+      state.workspace.manager.draft = createEmptyConnectionDraft();
+    }
+
+    flashStatus(t("status.connectionDeleted"));
+  } catch (error) {
+    console.error(error);
+    state.workspace.manager.error = getErrorMessage(error, t("error.connectionDelete"));
+  } finally {
+    state.workspace.manager.saving = false;
+    renderConnectionManager();
+  }
+}
+
+function normalizeActiveConnectionId(preferredConnectionId?: string | null): void {
+  const validIds = new Set(state.workspace.connections.map((connection) => connection.id));
+  const storedConnectionId = resolveStoredActiveConnectionId();
+  if (preferredConnectionId && validIds.has(preferredConnectionId)) {
+    state.workspace.activeConnectionId = preferredConnectionId;
+    persistActiveConnectionPreference(preferredConnectionId);
+    return;
+  }
+
+  if (storedConnectionId && validIds.has(storedConnectionId)) {
+    state.workspace.activeConnectionId = storedConnectionId;
+    persistActiveConnectionPreference(storedConnectionId);
+    return;
+  }
+
+  if (state.workspace.activeConnectionId && validIds.has(state.workspace.activeConnectionId)) {
+    persistActiveConnectionPreference(state.workspace.activeConnectionId);
+    return;
+  }
+
+  state.workspace.activeConnectionId = state.workspace.connections[0]?.id ?? null;
+  persistActiveConnectionPreference(state.workspace.activeConnectionId);
+}
+
+function renderWorkspaceConnections(): void {
+  const connections = state.workspace.connections;
+  const activeConnectionId = getActiveConnectionId();
+  const activeConnection = connections.find((connection) => connection.id === activeConnectionId) ?? null;
+  elements.sidebarVaultTitle.textContent = activeConnection?.name ?? t("sidebar.vault");
+  elements.sidebarVaultSwitcher.classList.toggle("is-open", state.workspace.switcherOpen);
+  elements.sidebarVaultMenu.hidden = !state.workspace.switcherOpen;
+  elements.sidebarVaultMenu.innerHTML = connections
+    .map((connection) => {
+      const isActive = connection.id === activeConnectionId;
+      const root = getConnectionNotesRoot(connection) || t("common.notSet");
+      return `
+        <button
+          type="button"
+          class="sidebar-vault-menu__item${isActive ? " is-active" : ""}"
+          data-sidebar-connection-id="${escapeAttribute(connection.id)}"
+        >
+          <p class="sidebar-vault-menu__title">${escapeHtml(connection.name)}</p>
+          <p class="sidebar-vault-menu__meta">${escapeHtml(getWorkspaceConnectionKindLabel(connection.kind))} · ${escapeHtml(root)}</p>
+        </button>
+      `;
+    })
+    .join("");
+  const label = state.workspace.manager.open ? t("common.close") : t("workspace.manage");
+  const labelElement = elements.workspaceConnectionsButton.querySelector<HTMLElement>(".activity-button__label");
+  if (labelElement) {
+    labelElement.textContent = label;
+  } else {
+    elements.workspaceConnectionsButton.textContent = label;
+  }
+  elements.workspaceConnectionsButton.title = label;
+  elements.workspaceConnectionsButton.setAttribute("aria-label", label);
+  elements.workspaceConnectionsButton.classList.toggle("is-active", state.workspace.manager.open);
+}
+
+function closeSidebarVaultSwitcher(): void {
+  if (!state.workspace.switcherOpen) {
+    return;
+  }
+
+  state.workspace.switcherOpen = false;
+  renderWorkspaceConnections();
+}
+
+function renderConnectionManager(): void {
+  normalizeConnectionManagerSelection();
+
+  const managerState = state.workspace.manager;
+  const selectedConnection = getConnectionManagerSelectedConnection();
+  const draft = managerState.draft;
+  const showCodeRoots = draft.kind === "code_repo";
+  const rootMeta = getConnectionRootFieldMeta(draft.kind);
+  const placeholders = getWorkspaceConnectionPathPlaceholders(draft.kind);
+  const canUseSelectedConnection = selectedConnection !== null
+    && selectedConnection.id !== getActiveConnectionId()
+    && !managerState.saving;
+
+  elements.connectionManager.hidden = !managerState.open;
+  elements.connectionManagerTitle.textContent = managerState.mode === "create"
+    ? t("connection.title")
+    : selectedConnection?.name ?? t("workspace.edit");
+  elements.connectionManagerDescription.textContent = managerState.mode === "create"
+    ? t("connection.description")
+    : t("workspace.updateDescription");
+  elements.connectionManagerKindHint.textContent = getWorkspaceConnectionKindDescription(draft.kind);
+  elements.connectionManagerRootLabel.textContent = rootMeta.label;
+  elements.connectionManagerRootHint.textContent = rootMeta.hint;
+
+  elements.connectionManagerNameInput.value = draft.name;
+  elements.connectionManagerNameInput.placeholder = getWorkspaceConnectionNamePlaceholder(draft.kind);
+  elements.connectionManagerKindSelect.value = draft.kind;
+  elements.connectionManagerRootPathInput.value = draft.rootPath;
+  elements.connectionManagerRootPathInput.placeholder = placeholders.rootPath;
+  elements.connectionManagerCodeRootInput.value = draft.codeRoot;
+  elements.connectionManagerCodeRootInput.placeholder = placeholders.codeRoot;
+  elements.connectionManagerNotesRootInput.value = draft.notesRoot;
+  elements.connectionManagerNotesRootInput.placeholder = placeholders.notesRoot;
+  elements.connectionManagerDefaultCheckbox.checked = draft.isDefault;
+  elements.connectionManagerActivateCheckbox.checked = draft.activateOnSave;
+
+  elements.connectionManagerRootField.hidden = showCodeRoots;
+  elements.connectionManagerNameInput.disabled = managerState.saving;
+  elements.connectionManagerKindSelect.disabled = managerState.saving;
+  elements.connectionManagerRootPathInput.disabled = managerState.saving || showCodeRoots;
+  elements.connectionManagerCodeRootInput.disabled = managerState.saving || !showCodeRoots;
+  elements.connectionManagerNotesRootInput.disabled = managerState.saving || !showCodeRoots;
+  elements.connectionManagerDefaultCheckbox.disabled = managerState.saving;
+  elements.connectionManagerActivateCheckbox.disabled = managerState.saving;
+  elements.connectionManagerCreateButton.disabled = managerState.saving;
+
+  elements.connectionManagerRootPathInput.required = !showCodeRoots;
+  elements.connectionManagerCodeRootInput.required = showCodeRoots;
+  elements.connectionManagerNotesRootInput.required = showCodeRoots;
+  elements.connectionManagerCodeRootField.hidden = !showCodeRoots;
+  elements.connectionManagerNotesRootField.hidden = !showCodeRoots;
+
+  elements.connectionManagerError.textContent = managerState.error ?? "";
+  elements.connectionManagerError.hidden = managerState.error === null;
+
+  elements.connectionManagerDeleteButton.hidden = managerState.mode !== "edit";
+  elements.connectionManagerDeleteButton.disabled = managerState.saving || selectedConnection?.isDefault === true;
+  elements.connectionManagerUseButton.hidden = managerState.mode !== "edit";
+  elements.connectionManagerUseButton.disabled = !canUseSelectedConnection;
+  elements.connectionManagerResetButton.disabled = managerState.saving;
+  elements.connectionManagerSubmitButton.disabled = managerState.saving;
+  elements.connectionManagerSubmitButton.textContent = managerState.saving
+    ? (managerState.mode === "create" ? t("common.connecting") : t("status.saving"))
+    : (managerState.mode === "create" ? t("connection.create") : t("connection.save"));
+
+  elements.connectionManagerForm.querySelectorAll<HTMLButtonElement>("[data-connection-preset]")
+    .forEach((element) => {
+      element.classList.toggle("is-active", element.dataset.connectionPreset === draft.kind);
+      element.disabled = managerState.saving;
+    });
+
+  elements.connectionManagerForm.querySelectorAll<HTMLButtonElement>("[data-connection-path-browse], [data-connection-path-paste], [data-connection-path-clear]")
+    .forEach((element) => {
+      element.disabled = managerState.saving;
+    });
+
+  elements.connectionManagerList.innerHTML = state.workspace.connections
+    .map((connection) => {
+      const isActive = connection.id === getActiveConnectionId();
+      const isSelected = managerState.mode === "edit" && connection.id === managerState.selectedConnectionId;
+      const notesRoot = getConnectionNotesRoot(connection);
+      const codeMeta = connection.kind === "code_repo" && connection.codeRoot?.trim()
+        ? `<p class="connection-manager-list__meta">${escapeHtml(t("connection.codeLabel"))} · ${escapeHtml(connection.codeRoot)}</p>`
+        : "";
+      const notesLabel = connection.kind === "code_repo" ? t("connection.notesLabel") : t("connection.rootLabel");
+      return `
+        <button
+          type="button"
+          class="connection-manager-list__item${isSelected ? " is-selected" : ""}"
+          data-connection-manager-id="${escapeAttribute(connection.id)}"
+        >
+          <div class="connection-manager-list__header">
+            <span class="connection-manager-list__title">${escapeHtml(connection.name)}</span>
+            <span class="connection-manager-list__kind">${escapeHtml(getWorkspaceConnectionKindLabel(connection.kind))}</span>
+          </div>
+          <div class="connection-manager-list__flags">
+            ${connection.isDefault ? `<span class="connection-manager-list__flag">${escapeHtml(t("common.default"))}</span>` : ""}
+            ${isActive ? `<span class="connection-manager-list__flag is-active">${escapeHtml(t("common.active"))}</span>` : ""}
+          </div>
+          <p class="connection-manager-list__meta">${escapeHtml(notesLabel)} · ${escapeHtml(notesRoot || t("common.notSet"))}</p>
+          ${codeMeta}
+        </button>
+      `;
+    })
+    .join("");
+
+  elements.connectionManagerEmpty.hidden = state.workspace.connections.length > 0;
+  elements.connectionManagerList.hidden = state.workspace.connections.length === 0;
+}
+
+async function reloadVault(
+  preferredNoteId: string | null = state.vault.selectedNoteId,
+  options: { preferredConnectionId?: string | null } = {}
+): Promise<void> {
+  try {
+    state.workspace.switcherOpen = false;
+    const connections = await api.listWorkspaceConnections();
+    state.workspace.connections = connections;
+    normalizeActiveConnectionId(options.preferredConnectionId);
+    renderWorkspaceConnections();
+
+    const activeConnectionId = getActiveConnectionId();
+    if (!activeConnectionId) {
+      state.vault.notes = [];
+      state.vault.folders = [];
+      state.vault.selectedNoteId = null;
+      render();
+      setStatus(t("status.noConnections"));
+      return;
+    }
+
+    const [notes, folders] = await Promise.all([
+      workspaceClient.listNotes({ connectionId: activeConnectionId }),
+      workspaceClient.listFolders({ connectionId: activeConnectionId }),
     ]);
-    state.vault.notes = snapshot.notes;
+    state.vault.notes = notes;
     state.vault.folders = folders;
-    state.vault.selectedNoteId = snapshot.activeNoteId;
-    await hydrateWorkspaceTabs(snapshot.activeNoteId);
+    await ensureMemoryLoaded();
+    state.vault.selectedNoteId = resolveSelection(preferredNoteId, notes);
+    await hydrateWorkspaceTabs(state.vault.selectedNoteId);
     ensureSelectedFolderStillExists();
     syncSelectedFolderWithSelectedNote();
     state.hasExternalChanges = false;
@@ -1367,9 +3701,33 @@ async function reloadVault(preferredNoteId: string | null = state.vault.selected
     state.vault.folders = [];
     state.vault.selectedFolderPath = "";
     state.vault.selectedNoteId = null;
+    renderWorkspaceConnections();
     render();
-    flashStatus("Ошибка загрузки");
+    flashStatus(t("status.loadError"));
   }
+}
+
+async function handleConnectionSelectionChange(connectionId: string): Promise<void> {
+  const nextConnectionId = connectionId.trim();
+  if (!nextConnectionId || nextConnectionId === state.workspace.activeConnectionId) {
+    return;
+  }
+
+  commitCurrentTitleDraft();
+  const saved = await flushAllPendingSaves();
+  if (!saved) {
+    renderWorkspaceConnections();
+    return;
+  }
+
+  state.workspace.activeConnectionId = nextConnectionId;
+  state.workspace.switcherOpen = false;
+  persistActiveConnectionPreference(nextConnectionId);
+  state.vault.selectedFolderPath = "";
+  state.query = "";
+  elements.searchInput.value = "";
+  setStatus(t("status.switchingWorkspace"));
+  await reloadVault(null, { preferredConnectionId: nextConnectionId });
 }
 
 function resolveSelection(preferredNoteId: string | null, notes: Note[]): string | null {
@@ -1388,45 +3746,46 @@ async function handleCreateNote(title = ""): Promise<void> {
   }
 
   try {
-    const baseTitle = title.trim() || "Untitled";
+    const baseTitle = title.trim();
     const note = await api.createNote({
       title: baseTitle,
-      content: title ? `# ${baseTitle}\n` : "",
+      content: baseTitle ? `# ${baseTitle}\n` : "",
       folderPath: state.vault.selectedFolderPath,
     });
 
     state.vault.notes.unshift({
       ...note,
-      draftTitle: title ? undefined : "",
+      draftTitle: baseTitle ? undefined : "",
     });
     await syncWorkspaceTabOpen(note.id);
     state.vault.selectedNoteId = note.id;
     syncSelectedFolderWithSelectedNote();
     render();
-    flashStatus("Создан markdown-файл");
+    flashStatus(t("status.noteCreated"));
   } catch (error) {
     console.error(error);
-    flashStatus(getErrorMessage(error, "Ошибка создания"));
+    flashStatus(getErrorMessage(error, t("error.create")));
   }
 }
 
 async function handleCreateFolder(): Promise<void> {
   const suggestedPath = state.vault.selectedFolderPath ? `${state.vault.selectedFolderPath}/` : "";
-  const nextPath = window.prompt("Путь новой папки", suggestedPath)?.trim();
+  const nextPath = window.prompt(t("prompt.newFolder"), suggestedPath)?.trim();
   if (!nextPath) {
     return;
   }
 
   try {
-    const folder = await workspaceClient.createFolder({ path: nextPath });
-    state.vault.folders = await workspaceClient.listFolders();
+    const connectionId = getActiveConnectionId();
+    const folder = await workspaceClient.createFolder({ path: nextPath }, { connectionId });
+    state.vault.folders = await workspaceClient.listFolders({ connectionId });
     state.vault.selectedFolderPath = folder.path;
     expandFolderAncestors(folder.path);
     render();
-    flashStatus(`Папка создана: ${folder.path}`);
+    flashStatus(t("status.folderCreated", { path: folder.path }));
   } catch (error) {
     console.error(error);
-    flashStatus("Ошибка создания папки");
+    flashStatus(t("error.createFolder"));
   }
 }
 
@@ -1436,7 +3795,7 @@ async function handleRenameSelectedFolder(): Promise<void> {
     return;
   }
 
-  const nextPath = window.prompt("Новый путь папки", currentPath)?.trim();
+  const nextPath = window.prompt(t("prompt.renameFolder"), currentPath)?.trim();
   if (!nextPath || nextPath === currentPath) {
     return;
   }
@@ -1444,14 +3803,14 @@ async function handleRenameSelectedFolder(): Promise<void> {
   const preferredNoteId = remapNoteIdForFolderChange(state.vault.selectedNoteId, currentPath, nextPath);
 
   try {
-    setStatus("Переименование папки...");
-    await workspaceClient.renameFolder(currentPath, { nextPath });
+    setStatus(t("folders.rename"));
+    await workspaceClient.renameFolder(currentPath, { nextPath }, { connectionId: getActiveConnectionId() });
     remapFolderState(currentPath, nextPath);
     await reloadVault(preferredNoteId);
-    flashStatus(`Папка переименована: ${nextPath}`);
+    flashStatus(t("status.folderRenamed", { path: nextPath }));
   } catch (error) {
     console.error(error);
-    flashStatus(getErrorMessage(error, "Ошибка переименования папки"));
+    flashStatus(getErrorMessage(error, t("error.renameFolder")));
   }
 }
 
@@ -1462,29 +3821,29 @@ async function handleDeleteSelectedFolder(): Promise<void> {
   }
 
   if (!isSelectedFolderDeletable()) {
-    flashStatus("Удаляются только пустые папки");
+    flashStatus(t("status.onlyEmptyFolders"));
     return;
   }
 
   const confirmed = await confirmAction({
-    title: "Удалить папку?",
-    description: `Папка "${currentPath}" будет удалена. Это действие нельзя отменить.`,
+    title: t("confirm.deleteFolderTitle"),
+    description: t("confirm.deleteFolderDescription", { path: currentPath }),
   });
   if (!confirmed) {
     return;
   }
 
   try {
-    setStatus("Удаление папки...");
-    await workspaceClient.deleteFolder(currentPath);
+    setStatus(t("common.delete"));
+    await workspaceClient.deleteFolder(currentPath, { connectionId: getActiveConnectionId() });
     state.vault.selectedFolderPath = getParentFolderPath(currentPath);
     state.vault.collapsedFolderPaths = state.vault.collapsedFolderPaths
       .filter((item) => item !== getFolderCollapseKey(currentPath));
     await reloadVault(state.vault.selectedNoteId);
-    flashStatus(`Папка удалена: ${currentPath}`);
+    flashStatus(t("status.folderDeleted", { path: currentPath }));
   } catch (error) {
     console.error(error);
-    flashStatus(getErrorMessage(error, "Ошибка удаления папки"));
+    flashStatus(getErrorMessage(error, t("error.deleteFolder")));
   }
 }
 
@@ -1503,7 +3862,7 @@ async function handleMoveSelectedNote(nextFolderPath: string): Promise<void> {
   }
 
   try {
-    setStatus("Перемещение...");
+    setStatus(t("status.moving"));
     const moved = await api.updateNote(note.id, {
       title: getPersistableTitle(note),
       content: note.content,
@@ -1512,10 +3871,14 @@ async function handleMoveSelectedNote(nextFolderPath: string): Promise<void> {
     state.vault.selectedFolderPath = moved.folderPath;
     expandFolderAncestors(moved.folderPath);
     replaceNote(note.id, moved);
-    flashStatus(moved.folderPath ? `Перемещено в ${moved.folderPath}` : "Перемещено в Root");
+    flashStatus(
+      moved.folderPath
+        ? t("status.movedTo", { path: moved.folderPath })
+        : t("status.movedToRoot")
+    );
   } catch (error) {
     console.error(error);
-    flashStatus(getErrorMessage(error, "Ошибка перемещения"));
+    flashStatus(getErrorMessage(error, t("error.move")));
     renderWorkspace(false);
   }
 }
@@ -1527,7 +3890,7 @@ async function handlePromptMoveSelectedNote(): Promise<void> {
   }
 
   const nextFolderPath = window.prompt(
-    "Куда переместить заметку",
+    t("prompt.moveNote"),
     note.folderPath
   )?.trim();
 
@@ -1551,25 +3914,29 @@ async function handleDeleteNote(): Promise<void> {
   }
 
   const confirmed = await confirmAction({
-    title: "Удалить заметку?",
-    description: `Заметка "${getDisplayTitle(note)}" будет удалена из vault. Это действие нельзя отменить.`,
+    title: t("confirm.deleteNoteTitle"),
+    description: t("confirm.deleteNoteDescription", { title: getDisplayTitle(note) }),
   });
   if (!confirmed) {
     return;
   }
 
   try {
-    const fallbackNoteId = getWorkspaceTabFallbackNoteId(note.id) ?? note.id;
+    const tab = findWorkspaceTabByNoteId(note.id);
+    const fallbackTabId = tab ? getWorkspaceTabFallbackTabId(tab.id) : null;
+    const fallbackNoteId = findWorkspaceTab(fallbackTabId ?? "")?.noteId ?? note.id;
     await api.deleteNote(note.id);
     state.vault.notes = state.vault.notes.filter((item) => item.id !== note.id);
     await hydrateWorkspaceTabs(fallbackNoteId);
-    removeWorkspaceTabReference(note.id, fallbackNoteId);
+    if (tab) {
+      removeWorkspaceTabReference(tab.id, fallbackTabId);
+    }
     syncSelectedNoteFromTabs(fallbackNoteId);
     render();
-    flashStatus("Файл удалён");
+    flashStatus(t("status.fileDeleted"));
   } catch (error) {
     console.error(error);
-    flashStatus("Ошибка удаления");
+    flashStatus(t("error.delete"));
   }
 }
 
@@ -1587,12 +3954,16 @@ function render(): void {
   ensureSelection();
   normalizeSelectedNoteSelection();
   applyShellLayout();
+  renderWorkspaceConnections();
+  renderNavigationControls();
   renderView();
   renderWorkspaceTabs();
   renderFolderControls();
   renderFolderList();
   renderNoteList();
   renderWorkspace();
+  renderMemoryView();
+  renderConnectionManager();
   renderGraphNodeMenu();
 
   if (state.view === "graph") {
@@ -1601,10 +3972,14 @@ function render(): void {
   } else {
     closeGraphNodeMenu();
   }
+
+  applyTranslations();
 }
 
 function renderView(): void {
   elements.editorLayout.dataset.view = state.view;
+  elements.editorLayout.hidden = state.view === "memory";
+  elements.memoryLayout.hidden = state.view !== "memory";
   elements.graphPane.hidden = state.view !== "graph";
   elements.workspaceViewBadge.textContent = getViewModeLabel(state.view);
   elements.viewButtons.forEach((button) => {
@@ -1613,7 +3988,7 @@ function renderView(): void {
 }
 
 function rememberNoteView(mode: ViewMode): void {
-  if (mode !== "graph") {
+  if (mode !== "graph" && mode !== "memory") {
     state.shell.lastNoteView = mode;
   }
 }
@@ -1622,16 +3997,77 @@ function getLastNoteView(): NoteViewMode {
   return state.shell.lastNoteView;
 }
 
+function renderMemoryView(): void {
+  const globalMemory = state.memory.global;
+  const workspaceMemory = state.memory.workspace;
+
+  if (document.activeElement !== elements.memoryGlobalEditor) {
+    elements.memoryGlobalEditor.value = globalMemory.content;
+  }
+
+  if (document.activeElement !== elements.memoryWorkspaceEditor) {
+    elements.memoryWorkspaceEditor.value = workspaceMemory.content;
+  }
+  elements.memoryGlobalEditor.disabled = globalMemory.loading || globalMemory.saving;
+  elements.memoryWorkspaceEditor.disabled = workspaceMemory.loading || workspaceMemory.saving || !workspaceMemory.connectionId;
+
+  elements.memoryGlobalState.textContent = getMemoryStateLabel(globalMemory);
+  elements.memoryWorkspaceState.textContent = getMemoryStateLabel(workspaceMemory);
+  elements.memoryGlobalUpdated.textContent = formatMemoryTimestamp(globalMemory.updatedAt);
+  elements.memoryWorkspaceUpdated.textContent = formatMemoryTimestamp(workspaceMemory.updatedAt);
+  elements.memoryWorkspaceConnection.textContent = workspaceMemory.connectionName ?? t("memory.noWorkspace");
+
+  elements.memoryReloadAllButton.disabled = globalMemory.loading || workspaceMemory.loading;
+  elements.memoryGlobalSaveButton.disabled = !isMemoryDirty("global") || globalMemory.loading || globalMemory.saving;
+  elements.memoryGlobalReloadButton.disabled = globalMemory.loading || globalMemory.saving;
+  elements.memoryGlobalClearButton.disabled = (!globalMemory.exists && !globalMemory.content) || globalMemory.loading || globalMemory.saving;
+  elements.memoryWorkspaceSaveButton.disabled = !isMemoryDirty("workspace") || workspaceMemory.loading || workspaceMemory.saving || !workspaceMemory.connectionId;
+  elements.memoryWorkspaceReloadButton.disabled = workspaceMemory.loading || workspaceMemory.saving || !workspaceMemory.connectionId;
+  elements.memoryWorkspaceClearButton.disabled = (!workspaceMemory.exists && !workspaceMemory.content)
+    || workspaceMemory.loading
+    || workspaceMemory.saving
+    || !workspaceMemory.connectionId;
+
+  if (state.view === "memory") {
+    elements.noteMeta.textContent = buildMemoryMetaLabel();
+  }
+}
+
 function renderGraphView(): void {
   syncGraphPathSelection();
   elements.graphPane.dataset.sidebarCollapsed = String(state.graph.sidebarCollapsed);
   elements.graphGlobalButton.classList.toggle("is-active", state.graph.mode === "global");
   elements.graphLocalButton.classList.toggle("is-active", state.graph.mode === "local");
-  elements.graphColorMode.value = state.graph.colorMode;
+  elements.graphGlobalButton.title = t("graph.global");
+  elements.graphGlobalButton.setAttribute("aria-label", t("graph.global"));
+  elements.graphLocalButton.title = t("graph.local");
+  elements.graphLocalButton.setAttribute("aria-label", t("graph.local"));
+  elements.graphColorModeButton.title = `${t("common.color")}: ${getGraphColorModeLabel(state.graph.colorMode)}`;
+  elements.graphColorModeButton.setAttribute("aria-label", `${t("common.color")}: ${getGraphColorModeLabel(state.graph.colorMode)}`);
+  const graphColorModeGlyph = elements.graphColorModeButton.querySelector<HTMLElement>(".graph-toolbar-button__glyph");
+  if (graphColorModeGlyph) {
+    graphColorModeGlyph.textContent = getGraphColorModeGlyph(state.graph.colorMode);
+  }
   elements.graphFolderScopeButton.classList.toggle("is-active", state.graph.folderScoped);
   elements.graphExistingOnlyButton.classList.toggle("is-active", state.graph.existingFilesOnly);
+  elements.graphFolderScopeButton.title = t("graph.scopeFolder");
+  elements.graphFolderScopeButton.setAttribute("aria-label", t("graph.scopeFolder"));
+  elements.graphExistingOnlyButton.title = t("graph.existingOnly");
+  elements.graphExistingOnlyButton.setAttribute("aria-label", t("graph.existingOnly"));
   elements.graphToggleSidebarButton.classList.toggle("is-active", state.graph.sidebarCollapsed);
-  elements.graphToggleSidebarButton.textContent = state.graph.sidebarCollapsed ? "Show panel" : "Hide panel";
+  elements.graphCenterViewButton.title = t("graph.center");
+  elements.graphCenterViewButton.setAttribute("aria-label", t("graph.center"));
+  elements.graphResetViewButton.title = t("graph.resetView");
+  elements.graphResetViewButton.setAttribute("aria-label", t("graph.resetView"));
+  const toggleSidebarLabel = state.graph.sidebarCollapsed
+    ? t("graph.showPanel")
+    : t("graph.hidePanel");
+  const toggleSidebarGlyph = elements.graphToggleSidebarButton.querySelector<HTMLElement>(".graph-action-button__glyph");
+  if (toggleSidebarGlyph) {
+    toggleSidebarGlyph.textContent = state.graph.sidebarCollapsed ? "▸" : "◂";
+  }
+  elements.graphToggleSidebarButton.title = toggleSidebarLabel;
+  elements.graphToggleSidebarButton.setAttribute("aria-label", toggleSidebarLabel);
   elements.graphLocalButton.disabled = state.vault.selectedNoteId === null;
   elements.graphPathFindButton.disabled = !state.graph.pathFromNoteId || !state.graph.pathToNoteId;
 
@@ -1640,9 +4076,9 @@ function renderGraphView(): void {
   renderGraphCanvas();
   renderGraphPathControls();
   renderGraphPathResult();
-  renderGraphInsightList(elements.graphTopLinked, state.graph.topLinked, "Нет ranked notes");
-  renderGraphInsightList(elements.graphHubs, state.graph.hubs, "Нет hub notes");
-  renderGraphInsightList(elements.graphBridges, state.graph.bridges, "Нет bridge notes");
+  renderGraphInsightList(elements.graphTopLinked, state.graph.topLinked, t("graph.noRankedNotes"));
+  renderGraphInsightList(elements.graphHubs, state.graph.hubs, t("graph.noHubNotes"));
+  renderGraphInsightList(elements.graphBridges, state.graph.bridges, t("graph.noBridgeNotes"));
   renderGraphBrokenLinks();
   renderGraphOrphans();
 }
@@ -1659,7 +4095,7 @@ async function ensureGraphData(force = false): Promise<void> {
     state.graph.orphans = [];
     state.graph.path = null;
     state.graph.pathRequestKey = "";
-    state.graph.error = "Выберите заметку для local graph";
+    state.graph.error = t("graph.chooseLocal");
     state.graph.requestKey = "";
     renderGraphView();
     return;
@@ -1714,7 +4150,7 @@ async function ensureGraphData(force = false): Promise<void> {
     state.graph.bridges = [];
     state.graph.brokenLinks = [];
     state.graph.orphans = [];
-    state.graph.error = "Ошибка загрузки graph view";
+    state.graph.error = t("graph.loadError");
   } finally {
     if (requestId === graphRequestSequence) {
       state.graph.loading = false;
@@ -1740,6 +4176,11 @@ function getGraphRequestConfig(): {
   }
 
   const params = new URLSearchParams();
+  const activeConnectionId = getActiveConnectionId();
+  if (activeConnectionId) {
+    params.set("connectionId", activeConnectionId);
+  }
+
   if (state.graph.folderScoped && state.vault.selectedFolderPath) {
     params.set("folderPath", state.vault.selectedFolderPath);
   }
@@ -1762,6 +4203,7 @@ function getGraphRequestConfig(): {
 
   return {
     key: [
+      activeConnectionId ?? "",
       state.graph.mode,
       selectedNoteId ?? "",
       state.graph.folderScoped ? state.vault.selectedFolderPath : "",
@@ -1782,7 +4224,7 @@ function getGraphRequestConfig(): {
 
 function renderGraphStats(): void {
   if (state.graph.loading) {
-    elements.graphStats.innerHTML = `<span class="graph-stat">Loading graph…</span>`;
+    elements.graphStats.innerHTML = `<span class="graph-stat">${escapeHtml(t("graph.loading"))}</span>`;
     return;
   }
 
@@ -1792,19 +4234,19 @@ function renderGraphStats(): void {
   }
 
   const stats = state.graph.snapshot.stats;
-  const modeLabel = state.graph.mode === "local" ? "Local graph" : "Global graph";
+  const modeLabel = state.graph.mode === "local" ? t("graph.localGraph") : t("graph.globalGraph");
   const scopeLabel = state.graph.folderScoped
-    ? state.vault.selectedFolderPath || "Root scope"
-    : "Whole vault";
+    ? state.vault.selectedFolderPath || t("graph.rootScope")
+    : t("graph.wholeVault");
 
   elements.graphStats.innerHTML = [
     modeLabel,
     scopeLabel,
-    `${stats.noteCount} notes`,
-    `${stats.edgeCount} edges`,
-    `${stats.tagCount} tags`,
-    `${stats.danglingCount} dangling`,
-    `${stats.orphanNoteCount} orphans`,
+    t("graph.notes", { count: stats.noteCount }),
+    t("graph.edges", { count: stats.edgeCount }),
+    t("graph.tags", { count: stats.tagCount }),
+    t("graph.dangling", { count: stats.danglingCount }),
+    t("graph.orphansCount", { count: stats.orphanNoteCount }),
   ]
     .map((label) => `<span class="graph-stat">${escapeHtml(label)}</span>`)
     .join("");
@@ -1837,27 +4279,34 @@ function renderGraphCanvas(): void {
   const colorState = getGraphColorState();
   if (!snapshot) {
     elements.graphEmptyState.hidden = false;
-    elements.graphEmptyState.textContent = state.graph.error ?? "Graph loading not started";
+    elements.graphEmptyState.textContent = state.graph.error ?? t("graph.loadingNotStarted");
     return;
   }
 
   if (state.graph.loading && snapshot.nodes.length === 0) {
     elements.graphEmptyState.hidden = false;
-    elements.graphEmptyState.textContent = "Loading graph…";
+    elements.graphEmptyState.textContent = t("graph.loading");
     return;
   }
 
   if (snapshot.nodes.length === 0) {
     elements.graphEmptyState.hidden = false;
-    elements.graphEmptyState.textContent = state.graph.error ?? "Нет graph данных для текущего scope";
+    elements.graphEmptyState.textContent = state.graph.error ?? t("graph.noData");
     return;
   }
 
   elements.graphEmptyState.hidden = true;
+  const selectedNodeId = snapshot.nodes.some((node) => node.id === state.graph.selectedNodeId)
+    ? state.graph.selectedNodeId
+    : null;
+  if (state.graph.selectedNodeId !== selectedNodeId) {
+    state.graph.selectedNodeId = selectedNodeId;
+  }
+  const selectionHighlights = getGraphSelectionHighlights(snapshot, selectedNodeId);
   const positions = getGraphLayoutPositions();
   if (!positions) {
     elements.graphEmptyState.hidden = false;
-    elements.graphEmptyState.textContent = state.graph.error ?? "Graph loading not started";
+    elements.graphEmptyState.textContent = state.graph.error ?? t("graph.loadingNotStarted");
     return;
   }
 
@@ -1886,6 +4335,8 @@ function renderGraphCanvas(): void {
         "graph-edge",
         edge.kind === "tag" ? "graph-edge--tag" : "",
         pathHighlights.edgeIds.has(edge.id) ? "is-path" : "",
+        selectionHighlights.edgeIds.has(edge.id) ? "is-selected" : "",
+        selectionHighlights.hasSelection && !selectionHighlights.edgeIds.has(edge.id) ? "is-dimmed" : "",
       ].filter(Boolean).join(" ")
     );
     line.setAttribute("stroke-width", String(Math.min(3.2, 1 + edge.weight * 0.45)));
@@ -1932,19 +4383,17 @@ function renderGraphCanvas(): void {
 
       event.stopPropagation();
       closeGraphNodeMenu();
-      if (node.noteId) {
-        void openNote(node.noteId, { nextView: getLastNoteView() });
+      state.graph.selectedNodeId = state.graph.selectedNodeId === node.id ? null : node.id;
+      renderGraphCanvas();
+    });
+    group.addEventListener("dblclick", (event: MouseEvent) => {
+      if (isGraphDragging || !node.noteId) {
         return;
       }
 
-      if (node.tag) {
-        applyTagFilter(node.tag);
-        return;
-      }
-
-      if (node.type === "dangling") {
-        flashStatus(`Нет заметки для [[${node.label}]]`);
-      }
+      event.stopPropagation();
+      closeGraphNodeMenu();
+      void openNote(node.noteId, { nextView: getLastNoteView() });
     });
 
     const circle = document.createElementNS(namespace, "circle");
@@ -1961,13 +4410,33 @@ function renderGraphCanvas(): void {
         `graph-node--${node.type}`,
         node.noteId === state.vault.selectedNoteId ? "is-active" : "",
         node.type === "note" && node.noteId && pathHighlights.nodeIds.has(node.noteId) ? "is-path" : "",
+        selectionHighlights.selectedNodeId === node.id ? "is-selected" : "",
+        selectionHighlights.relatedNodeIds.has(node.id) ? "is-related" : "",
+        selectionHighlights.hasSelection
+          && selectionHighlights.selectedNodeId !== node.id
+          && !selectionHighlights.relatedNodeIds.has(node.id)
+          ? "is-dimmed"
+          : "",
       ].filter(Boolean).join(" ")
     );
     group.append(circle);
 
     const label = document.createElementNS(namespace, "text");
     label.setAttribute("y", String(getGraphNodeRadius(node) + 16));
-    label.setAttribute("class", `graph-label${node.type === "dangling" ? " graph-label--muted" : ""}`);
+    label.setAttribute(
+      "class",
+      [
+        "graph-label",
+        node.type === "dangling" ? "graph-label--muted" : "",
+        selectionHighlights.selectedNodeId === node.id ? "is-selected" : "",
+        selectionHighlights.relatedNodeIds.has(node.id) ? "is-related" : "",
+        selectionHighlights.hasSelection
+          && selectionHighlights.selectedNodeId !== node.id
+          && !selectionHighlights.relatedNodeIds.has(node.id)
+          ? "is-dimmed"
+          : "",
+      ].filter(Boolean).join(" ")
+    );
     label.textContent = truncateLabel(node.type === "tag" ? `#${node.tag ?? node.label}` : node.label, 16);
     group.append(label);
 
@@ -1983,6 +4452,44 @@ function getGraphLayoutPositions(): Map<string, { x: number; y: number }> | null
   }
 
   return buildGraphLayout(state.graph.snapshot, state.vault.selectedNoteId, state.graph.mode);
+}
+
+function getGraphSelectionHighlights(
+  snapshot: GraphSnapshot,
+  selectedNodeId: string | null
+): {
+  hasSelection: boolean;
+  selectedNodeId: string | null;
+  relatedNodeIds: Set<string>;
+  edgeIds: Set<string>;
+} {
+  if (!selectedNodeId) {
+    return {
+      hasSelection: false,
+      selectedNodeId: null,
+      relatedNodeIds: new Set<string>(),
+      edgeIds: new Set<string>(),
+    };
+  }
+
+  const relatedNodeIds = new Set<string>();
+  const edgeIds = new Set<string>();
+  snapshot.edges.forEach((edge) => {
+    if (edge.source !== selectedNodeId && edge.target !== selectedNodeId) {
+      return;
+    }
+
+    edgeIds.add(edge.id);
+    relatedNodeIds.add(edge.source);
+    relatedNodeIds.add(edge.target);
+  });
+
+  return {
+    hasSelection: true,
+    selectedNodeId,
+    relatedNodeIds,
+    edgeIds,
+  };
 }
 
 function centerGraphViewport(): void {
@@ -2031,12 +4538,19 @@ function renderGraphInsightList(
   container.innerHTML = items
     .map((item) => {
       const meta = "disconnectedGroups" in item
-        ? `${item.disconnectedGroups} cuts · ${item.neighborCount} neighbors`
-        : `${item.inboundLinks} in · ${item.outboundLinks} out · ${item.neighborCount} neighbors`;
+        ? t("graph.bridgeMeta", {
+            cuts: item.disconnectedGroups,
+            neighbors: item.neighborCount,
+          })
+        : t("graph.hubMeta", {
+            inbound: item.inboundLinks,
+            outbound: item.outboundLinks,
+            neighbors: item.neighborCount,
+          });
       return `
         <button type="button" class="graph-insight-item" data-note-id="${escapeAttribute(item.noteId)}">
           <p class="graph-insight-item__title">${escapeHtml(item.title)}</p>
-          <p class="graph-insight-item__meta">${escapeHtml(item.folderPath || "Root")} · score ${item.score}</p>
+          <p class="graph-insight-item__meta">${escapeHtml(item.folderPath || getRootLabel())} · ${escapeHtml(t("graph.score", { score: item.score }))}</p>
           <p class="graph-insight-item__meta">${escapeHtml(meta)}</p>
         </button>
       `;
@@ -2054,7 +4568,7 @@ function renderGraphPathControls(): void {
     })
     .join("");
 
-  const placeholder = `<option value="">Select note</option>`;
+  const placeholder = `<option value="">${escapeHtml(t("graph.selectNote"))}</option>`;
   elements.graphPathFrom.innerHTML = placeholder + options;
   elements.graphPathTo.innerHTML = placeholder + options;
   elements.graphPathFrom.value = state.graph.pathFromNoteId ?? "";
@@ -2063,7 +4577,7 @@ function renderGraphPathControls(): void {
 
 function renderGraphPathResult(): void {
   if (state.graph.pathLoading) {
-    elements.graphPathResult.innerHTML = `<p class="graph-empty-list">Finding path…</p>`;
+    elements.graphPathResult.innerHTML = `<p class="graph-empty-list">${escapeHtml(t("graph.findingPath"))}</p>`;
     return;
   }
 
@@ -2073,21 +4587,21 @@ function renderGraphPathResult(): void {
   }
 
   if (!state.graph.path) {
-    elements.graphPathResult.innerHTML = `<p class="graph-empty-list">Choose two notes to inspect graph path</p>`;
+    elements.graphPathResult.innerHTML = `<p class="graph-empty-list">${escapeHtml(t("graph.chooseTwoNotes"))}</p>`;
     return;
   }
 
   if (!state.graph.path.found) {
-    elements.graphPathResult.innerHTML = `<p class="graph-empty-list">No path found in current graph scope</p>`;
+    elements.graphPathResult.innerHTML = `<p class="graph-empty-list">${escapeHtml(t("graph.noPath"))}</p>`;
     return;
   }
 
-  const summary = `<p class="graph-empty-list">Distance ${state.graph.path.distance}</p>`;
+  const summary = `<p class="graph-empty-list">${escapeHtml(t("graph.distance", { distance: state.graph.path.distance ?? 0 }))}</p>`;
   const steps = state.graph.path.nodes
     .map((item, index) => `
       <button type="button" class="graph-insight-item${index === 0 ? " is-path-start" : ""}" data-note-id="${escapeAttribute(item.noteId)}">
         <p class="graph-insight-item__title">${escapeHtml(item.title)}</p>
-        <p class="graph-insight-item__meta">${escapeHtml(item.folderPath || "Root")} · step ${index + 1}</p>
+        <p class="graph-insight-item__meta">${escapeHtml(item.folderPath || getRootLabel())} · ${escapeHtml(t("graph.step", { step: index + 1 }))}</p>
       </button>
     `)
     .join("");
@@ -2152,7 +4666,7 @@ async function ensureGraphPathData(force = false): Promise<void> {
 
     state.graph.path = null;
     state.graph.pathRequestKey = pathConfig.key;
-    state.graph.pathError = "Ошибка поиска пути";
+    state.graph.pathError = t("graph.pathError");
   } finally {
     if (requestId === graphPathRequestSequence) {
       state.graph.pathLoading = false;
@@ -2170,20 +4684,24 @@ function getGraphPathRequestConfig(): { key: string; url: string } | null {
     fromNoteId: state.graph.pathFromNoteId,
     toNoteId: state.graph.pathToNoteId,
   });
+  const activeConnectionId = getActiveConnectionId();
+  if (activeConnectionId) {
+    params.set("connectionId", activeConnectionId);
+  }
 
   if (state.graph.folderScoped && state.vault.selectedFolderPath) {
     params.set("folderPath", state.vault.selectedFolderPath);
   }
 
   return {
-    key: `${state.graph.pathFromNoteId}|${state.graph.pathToNoteId}|${state.graph.folderScoped ? state.vault.selectedFolderPath : ""}`,
+    key: `${activeConnectionId ?? ""}|${state.graph.pathFromNoteId}|${state.graph.pathToNoteId}|${state.graph.folderScoped ? state.vault.selectedFolderPath : ""}`,
     url: `/api/graph/path?${params.toString()}`,
   };
 }
 
 function renderGraphBrokenLinks(): void {
   if (state.graph.brokenLinks.length === 0) {
-    elements.graphBrokenLinks.innerHTML = `<p class="graph-empty-list">Нет broken links</p>`;
+    elements.graphBrokenLinks.innerHTML = `<p class="graph-empty-list">${escapeHtml(t("graph.noBrokenLinks"))}</p>`;
     return;
   }
 
@@ -2191,8 +4709,8 @@ function renderGraphBrokenLinks(): void {
     .map((item) => `
       <button type="button" class="graph-insight-item graph-insight-item--warning" data-note-id="${escapeAttribute(item.sourceNoteId)}">
         <p class="graph-insight-item__title">${escapeHtml(item.linkText)}</p>
-        <p class="graph-insight-item__meta">${escapeHtml(item.sourceTitle)} · ${escapeHtml(item.sourceFolderPath || "Root")}</p>
-        <p class="graph-insight-item__meta">${item.occurrences} unresolved link${item.occurrences > 1 ? "s" : ""}</p>
+        <p class="graph-insight-item__meta">${escapeHtml(item.sourceTitle)} · ${escapeHtml(item.sourceFolderPath || getRootLabel())}</p>
+        <p class="graph-insight-item__meta">${escapeHtml(t("graph.unresolvedLinks", { count: item.occurrences }))}</p>
       </button>
     `)
     .join("");
@@ -2200,7 +4718,7 @@ function renderGraphBrokenLinks(): void {
 
 function renderGraphOrphans(): void {
   if (state.graph.orphans.length === 0) {
-    elements.graphOrphans.innerHTML = `<p class="graph-empty-list">Нет orphan notes</p>`;
+    elements.graphOrphans.innerHTML = `<p class="graph-empty-list">${escapeHtml(t("graph.noOrphans"))}</p>`;
     return;
   }
 
@@ -2208,8 +4726,8 @@ function renderGraphOrphans(): void {
     .map((item) => `
       <button type="button" class="graph-insight-item" data-note-id="${escapeAttribute(item.id)}">
         <p class="graph-insight-item__title">${escapeHtml(item.title)}</p>
-        <p class="graph-insight-item__meta">${escapeHtml(item.folderPath || "Root")}</p>
-        <p class="graph-insight-item__meta">No note-to-note links</p>
+        <p class="graph-insight-item__meta">${escapeHtml(item.folderPath || getRootLabel())}</p>
+        <p class="graph-insight-item__meta">${escapeHtml(t("graph.noNoteLinks"))}</p>
       </button>
     `)
     .join("");
@@ -2224,8 +4742,8 @@ function renderNoteList(): void {
     const item = document.createElement("li");
     item.className = "note-list__item";
     item.innerHTML = `
-      <p class="note-list__title">Нет заметок</p>
-      <p class="note-list__excerpt">Создайте markdown-заметку, и она появится здесь.</p>
+      <p class="note-list__title">${escapeHtml(t("note.none"))}</p>
+      <p class="note-list__excerpt">${escapeHtml(t("note.noneCopy"))}</p>
     `;
     elements.noteList.append(item);
     return;
@@ -2267,19 +4785,19 @@ function renderFolderControls(): void {
 
   elements.showAllFoldersButton.classList.toggle("is-active", showAll);
   elements.showSelectedFolderButton.classList.toggle("is-active", !showAll);
-  elements.folderSelectionPath.textContent = selectedFolderPath || "Root";
+  elements.folderSelectionPath.textContent = selectedFolderPath || getRootLabel();
 
   const isRoot = selectedFolderPath === "";
   const deleteHint = isRoot
-    ? "Root нельзя удалить"
+    ? t("folder.rootCannotDelete")
     : isSelectedFolderDeletable()
-      ? `Удалить пустую папку ${selectedFolderPath}`
-      : "Удаляются только пустые папки без вложенных папок и заметок";
+      ? t("folder.deleteSelected", { path: selectedFolderPath })
+      : t("folder.deleteOnlyEmpty");
 
   elements.renameFolderButton.disabled = isRoot;
   elements.renameFolderButton.title = isRoot
-    ? "Root нельзя переименовать"
-    : `Переименовать ${selectedFolderPath}`;
+    ? t("folder.rootCannotRename")
+    : t("folder.renameSelected", { path: selectedFolderPath });
   elements.deleteFolderButton.disabled = isRoot || !isSelectedFolderDeletable();
   elements.deleteFolderButton.title = deleteHint;
 }
@@ -2294,7 +4812,7 @@ function renderFolderList(): void {
   rootItem.innerHTML = `
     <button type="button" class="folder-list__button${state.vault.selectedFolderPath === "" ? " is-active" : ""}" data-folder-path="">
       <span class="folder-list__icon">▣</span>
-      <span class="folder-list__label">Root</span>
+      <span class="folder-list__label">${escapeHtml(getRootLabel())}</span>
     </button>
   `;
   elements.folderList.append(rootItem);
@@ -2309,31 +4827,37 @@ function renderWorkspaceTabs(): void {
   const tabs = getWorkspaceTabs();
   const activeTab = getActiveWorkspaceTab();
   const selectedNote = getSelectedNote();
-  const activeNote = activeTab ? findNoteById(activeTab.noteId) : selectedNote;
+  const activeNote = activeTab && isTabInActiveConnection(activeTab)
+    ? findNoteById(activeTab.noteId)
+    : selectedNote;
 
   elements.workspaceViewBadge.textContent = getViewModeLabel(state.view);
+  elements.workspaceNewTabButton.disabled = selectedNote === null;
 
-  if (!activeNote) {
-    elements.workspaceActiveTabState.textContent = "No active note";
+  if (!activeNote && !activeTab) {
+    elements.workspaceActiveTabState.textContent = t("workspace.noActiveNote");
   } else if (activeTab) {
-    const folderLabel = activeNote.folderPath || "Root";
+    const folderLabel = activeNote?.folderPath || activeTab.folderPath || getRootLabel();
+    const connectionLabel = activeTab.connectionName && !isTabInActiveConnection(activeTab)
+      ? ` · ${activeTab.connectionName}`
+      : "";
     elements.workspaceActiveTabState.innerHTML = `
-      <span class="workspace-tabs__active-title">${escapeHtml(getDisplayTitle(activeNote))}</span>
-      <span class="workspace-tabs__active-path">${escapeHtml(folderLabel)}</span>
+      <span class="workspace-tabs__active-title">${escapeHtml(activeNote ? getDisplayTitle(activeNote) : activeTab.title ?? activeTab.noteId)}</span>
+      <span class="workspace-tabs__active-path">${escapeHtml(`${folderLabel}${connectionLabel}`)}</span>
     `;
   } else {
-    const folderLabel = activeNote.folderPath || "Root";
+    const folderLabel = activeNote?.folderPath || getRootLabel();
     elements.workspaceActiveTabState.innerHTML = `
-      <span class="workspace-tabs__active-title">${escapeHtml(getDisplayTitle(activeNote))}</span>
-      <span class="workspace-tabs__active-path">Current note · ${escapeHtml(folderLabel)}</span>
+      <span class="workspace-tabs__active-title">${escapeHtml(activeNote ? getDisplayTitle(activeNote) : t("workspace.noActiveNote"))}</span>
+      <span class="workspace-tabs__active-path">${escapeHtml(`${t("workspace.currentNote")} · ${folderLabel}`)}</span>
     `;
   }
 
   if (tabs.length === 0) {
     elements.workspaceTabList.innerHTML = `
       <div class="workspace-tabs__empty">
-        <span>No tabs yet</span>
-        <span>Open the current note to pin it into the workspace strip.</span>
+        <span>${escapeHtml(t("workspace.emptyTabsTitle"))}</span>
+        <span>${escapeHtml(t("workspace.emptyTabsCopy"))}</span>
       </div>
     `;
     return;
@@ -2341,45 +4865,46 @@ function renderWorkspaceTabs(): void {
 
   elements.workspaceTabList.innerHTML = tabs
     .map((tab) => {
-      const note = findNoteById(tab.noteId);
-      if (!note) {
-        return "";
-      }
-
-      const isActive = tab.noteId === state.tabs.activeTabId;
-      const isDirty = isWorkspaceTabDirty(tab.noteId);
+      const note = isTabInActiveConnection(tab) ? findNoteById(tab.noteId) : null;
+      const isActive = tab.id === state.tabs.activeTabId;
+      const isDirty = note ? isWorkspaceTabDirty(note.id) : false;
+      const title = note ? getDisplayTitle(note) : tab.title ?? tab.noteId;
+      const meta = !isTabInActiveConnection(tab) && tab.connectionName
+        ? `<span class="workspace-note-tab__meta">${escapeHtml(tab.connectionName)}</span>`
+        : "";
       return `
         <div
           class="workspace-note-tab${isActive ? " is-active" : ""}${tab.pinned ? " is-pinned" : ""}"
-          data-workspace-tab-id="${escapeAttribute(tab.noteId)}"
+          data-workspace-tab-id="${escapeAttribute(tab.id)}"
           draggable="true"
         >
           <button
             type="button"
             class="workspace-note-tab__button"
-            data-workspace-tab-activate="${escapeAttribute(tab.noteId)}"
-            title="${escapeAttribute(getDisplayTitle(note))}"
+            data-workspace-tab-activate="${escapeAttribute(tab.id)}"
+            title="${escapeAttribute(title)}"
           >
             <span class="workspace-note-tab__pin-mark" aria-hidden="true">${tab.pinned ? "●" : ""}</span>
-            <span class="workspace-note-tab__title">${escapeHtml(getDisplayTitle(note))}</span>
+            <span class="workspace-note-tab__title">${escapeHtml(title)}</span>
+            ${meta}
             <span class="workspace-note-tab__dirty${isDirty ? " is-visible" : ""}" aria-hidden="true"></span>
           </button>
           <div class="workspace-note-tab__actions">
             <button
               type="button"
               class="workspace-note-tab__icon"
-              data-workspace-tab-pin="${escapeAttribute(tab.noteId)}"
-              aria-label="${tab.pinned ? "Unpin tab" : "Pin tab"}"
-              title="${tab.pinned ? "Unpin tab" : "Pin tab"}"
+              data-workspace-tab-pin="${escapeAttribute(tab.id)}"
+              aria-label="${escapeAttribute(tab.pinned ? t("workspace.tabUnpin") : t("workspace.tabPin"))}"
+              title="${escapeAttribute(tab.pinned ? t("workspace.tabUnpin") : t("workspace.tabPin"))}"
             >
               ${tab.pinned ? "★" : "☆"}
             </button>
             <button
               type="button"
               class="workspace-note-tab__icon"
-              data-workspace-tab-close="${escapeAttribute(tab.noteId)}"
-              aria-label="Close tab"
-              title="Close tab"
+              data-workspace-tab-close="${escapeAttribute(tab.id)}"
+              aria-label="${escapeAttribute(t("workspace.tabClose"))}"
+              title="${escapeAttribute(t("workspace.tabClose"))}"
             >
               ×
             </button>
@@ -2396,9 +4921,9 @@ function renderWorkspace(forceSyncInputs = true): void {
   if (!note) {
     const template = elements.emptyNoteTemplate.content.cloneNode(true);
     elements.noteTitle.value = "";
-    elements.noteFolderSelect.innerHTML = `<option value="">Root</option>`;
+    elements.noteFolderSelect.innerHTML = `<option value="">${escapeHtml(getRootLabel())}</option>`;
     elements.noteFolderSelect.value = "";
-    elements.notePathBadge.textContent = "Root";
+    elements.notePathBadge.textContent = getRootLabel();
     elements.noteEditor.value = "";
     elements.noteTitle.disabled = true;
     elements.noteFolderSelect.disabled = true;
@@ -2408,9 +4933,10 @@ function renderWorkspace(forceSyncInputs = true): void {
     hideTitleHint();
     hideTags();
     hideBacklinks();
+    closeWikilinkSuggestions();
     elements.notePreview.innerHTML = "";
     elements.notePreview.append(template);
-    elements.noteMeta.textContent = "0 слов";
+    elements.noteMeta.textContent = t("note.wordsMeta", { count: 0 });
     return;
   }
 
@@ -2430,11 +4956,16 @@ function renderWorkspace(forceSyncInputs = true): void {
 
   renderTitleHint(note);
   renderFolderSelect(note);
-  elements.notePathBadge.textContent = note.folderPath || "Root";
+  elements.notePathBadge.textContent = note.folderPath || getRootLabel();
   renderNoteTags(note);
   renderBacklinks(note);
+  renderWikilinkSuggestions();
   elements.notePreview.innerHTML = renderMarkdown(note.content);
-  elements.noteMeta.textContent = `${note.folderPath || "Root"} · ${countWords(note.content)} слов · ${countCharacters(note.content)} символов`;
+  elements.noteMeta.textContent = [
+    note.folderPath || getRootLabel(),
+    t("note.wordsMeta", { count: countWords(note.content) }),
+    t("note.charactersMeta", { count: countCharacters(note.content) }),
+  ].join(" · ");
 }
 
 function updateNoteTitle(nextTitle: string): void {
@@ -2444,7 +4975,7 @@ function updateNoteTitle(nextTitle: string): void {
   }
 
   note.draftTitle = nextTitle;
-  setStatus("Есть несохранённые изменения");
+  setStatus(t("status.unsavedChanges"));
   renderNoteList();
   renderWorkspace(false);
 }
@@ -2462,12 +4993,206 @@ function updateNoteContent(content: string): void {
   queueSave(note.id);
 }
 
+function updateWikilinkSuggestions(): void {
+  const note = getSelectedNote();
+  if (!note || document.activeElement !== elements.noteEditor) {
+    closeWikilinkSuggestions();
+    return;
+  }
+
+  const selectionStart = elements.noteEditor.selectionStart ?? elements.noteEditor.value.length;
+  const context = getWikilinkAutocompleteContext(elements.noteEditor.value, selectionStart);
+  if (!context) {
+    closeWikilinkSuggestions();
+    return;
+  }
+
+  const items = getWikilinkSuggestionItems(context.query, note.id);
+  if (items.length === 0) {
+    state.editor.wikilink.query = context.query;
+    state.editor.wikilink.replaceStart = context.replaceStart;
+    state.editor.wikilink.replaceEnd = context.replaceEnd;
+    state.editor.wikilink.activeIndex = 0;
+    state.editor.wikilink.items = [];
+    renderWikilinkSuggestions();
+    return;
+  }
+
+  state.editor.wikilink.query = context.query;
+  state.editor.wikilink.replaceStart = context.replaceStart;
+  state.editor.wikilink.replaceEnd = context.replaceEnd;
+  state.editor.wikilink.items = items;
+  state.editor.wikilink.activeIndex = clamp(state.editor.wikilink.activeIndex, 0, items.length - 1);
+  renderWikilinkSuggestions();
+}
+
+function closeWikilinkSuggestions(): void {
+  state.editor.wikilink.query = "";
+  state.editor.wikilink.replaceStart = 0;
+  state.editor.wikilink.replaceEnd = 0;
+  state.editor.wikilink.activeIndex = 0;
+  state.editor.wikilink.items = [];
+  renderWikilinkSuggestions();
+}
+
+function renderWikilinkSuggestions(): void {
+  const suggestionState = state.editor.wikilink;
+  if (
+    !suggestionState.query
+    && suggestionState.items.length === 0
+  ) {
+    elements.wikilinkSuggestions.hidden = true;
+    elements.wikilinkSuggestions.innerHTML = "";
+    return;
+  }
+
+  elements.wikilinkSuggestions.hidden = false;
+  if (suggestionState.items.length === 0) {
+    elements.wikilinkSuggestions.innerHTML = `<p class="wikilink-suggestions__empty">${escapeHtml(t("editor.noLinkMatches"))}</p>`;
+    return;
+  }
+
+  elements.wikilinkSuggestions.innerHTML = suggestionState.items
+    .map((item, index) => `
+      <button
+        type="button"
+        class="wikilink-suggestion${index === suggestionState.activeIndex ? " is-active" : ""}"
+        data-wikilink-note-id="${escapeAttribute(item.noteId)}"
+      >
+        <p class="wikilink-suggestion__title">${escapeHtml(item.insertion)}</p>
+        <p class="wikilink-suggestion__meta">${escapeHtml(item.meta)}</p>
+      </button>
+    `)
+    .join("");
+}
+
+function applyActiveWikilinkSuggestion(): void {
+  const suggestion = state.editor.wikilink.items[state.editor.wikilink.activeIndex];
+  const note = getSelectedNote();
+  if (!suggestion || !note) {
+    closeWikilinkSuggestions();
+    return;
+  }
+
+  const editor = elements.noteEditor;
+  const nextValue = `${editor.value.slice(0, state.editor.wikilink.replaceStart)}${suggestion.insertion}${editor.value.slice(state.editor.wikilink.replaceEnd)}`;
+  editor.value = nextValue;
+  const nextCaret = state.editor.wikilink.replaceStart + suggestion.insertion.length;
+  editor.setSelectionRange(nextCaret, nextCaret);
+  editor.focus();
+  updateNoteContent(nextValue);
+  closeWikilinkSuggestions();
+}
+
+function getWikilinkAutocompleteContext(
+  content: string,
+  cursorIndex: number
+): { query: string; replaceStart: number; replaceEnd: number } | null {
+  const beforeCursor = content.slice(0, cursorIndex);
+  const openIndex = beforeCursor.lastIndexOf("[[");
+  if (openIndex === -1) {
+    return null;
+  }
+
+  const closeIndex = beforeCursor.lastIndexOf("]]");
+  if (closeIndex > openIndex) {
+    return null;
+  }
+
+  const rawQuery = beforeCursor.slice(openIndex + 2);
+  if (rawQuery.includes("\n") || rawQuery.includes("\r") || rawQuery.includes("[") || rawQuery.includes("]") || rawQuery.includes("|")) {
+    return null;
+  }
+
+  return {
+    query: rawQuery.trim(),
+    replaceStart: openIndex + 2,
+    replaceEnd: cursorIndex,
+  };
+}
+
+function getWikilinkSuggestionItems(query: string, currentNoteId: string): WikilinkSuggestionItem[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  const titleCounts = new Map<string, number>();
+  state.vault.notes.forEach((note) => {
+    titleCounts.set(note.title.toLowerCase(), (titleCounts.get(note.title.toLowerCase()) ?? 0) + 1);
+  });
+
+  return state.vault.notes
+    .filter((note) => note.id !== currentNoteId)
+    .map((note) => {
+      const qualifiedPath = note.id.replace(/\.md$/i, "");
+      const folderLabel = note.folderPath || getRootLabel();
+      const duplicateTitle = (titleCounts.get(note.title.toLowerCase()) ?? 0) > 1;
+      const shouldUseQualifiedPath = duplicateTitle || normalizedQuery.includes("/");
+      const insertion = shouldUseQualifiedPath ? qualifiedPath : note.title;
+      const searchable = [
+        note.title.toLowerCase(),
+        qualifiedPath.toLowerCase(),
+        `${folderLabel}/${note.title}`.toLowerCase(),
+      ];
+      const score = getWikilinkSuggestionScore(searchable, normalizedQuery, note.title.toLowerCase(), qualifiedPath.toLowerCase());
+      return {
+        noteId: note.id,
+        title: note.title,
+        folderPath: note.folderPath,
+        insertion,
+        meta: duplicateTitle ? qualifiedPath : folderLabel,
+        score,
+      };
+    })
+    .filter((item) => item.score > 0 || normalizedQuery.length === 0)
+    .sort((left, right) => right.score - left.score || left.insertion.localeCompare(right.insertion, "en"))
+    .slice(0, 8)
+    .map(({ score: _score, ...item }) => item);
+}
+
+function getWikilinkSuggestionScore(
+  searchable: string[],
+  normalizedQuery: string,
+  title: string,
+  qualifiedPath: string
+): number {
+  if (!normalizedQuery) {
+    return 1;
+  }
+
+  if (title === normalizedQuery || qualifiedPath === normalizedQuery) {
+    return 120;
+  }
+
+  if (title.startsWith(normalizedQuery)) {
+    return 90;
+  }
+
+  if (qualifiedPath.startsWith(normalizedQuery)) {
+    return 80;
+  }
+
+  if (searchable.some((value) => value.includes(normalizedQuery))) {
+    return 40;
+  }
+
+  return 0;
+}
+
 async function openNote(
   noteId: string,
-  options: { nextView?: ViewMode } = {}
+  options: { nextView?: ViewMode; openInNewTab?: boolean; historyMode?: "push" | "skip" } = {}
 ): Promise<void> {
-  if (noteId === state.vault.selectedNoteId && !options.nextView && state.tabs.activeTabId === noteId) {
+  const currentTab = findWorkspaceTabByNoteId(noteId);
+  const nextView = options.nextView ?? state.view;
+  if (
+    noteId === state.vault.selectedNoteId
+    && nextView === state.view
+    && !options.openInNewTab
+    && state.tabs.activeTabId === currentTab?.id
+  ) {
     return;
+  }
+
+  if (options.historyMode !== "skip" && !isRestoringNavigation) {
+    pushNavigationEntry(captureNavigationEntry());
   }
 
   commitCurrentTitleDraft();
@@ -2480,15 +5205,29 @@ async function openNote(
     state.view = options.nextView;
     rememberNoteView(options.nextView);
   }
-  await syncWorkspaceTabOpen(noteId);
+  await syncWorkspaceTabOpen(noteId, {
+    replaceActive: options.openInNewTab !== true,
+    forceNew: options.openInNewTab === true,
+  });
   state.vault.selectedNoteId = noteId;
   syncSelectedFolderWithSelectedNote();
   render();
 }
 
+async function openSelectedNoteInNewTab(): Promise<void> {
+  const note = getSelectedNote();
+  if (!note) {
+    return;
+  }
+
+  await openNote(note.id, {
+    openInNewTab: true,
+  });
+}
+
 function queueSave(noteId: string, delayMs = SAVE_DEBOUNCE_MS): void {
   pendingSaveNoteId = noteId;
-  setStatus("Есть несохранённые изменения");
+  setStatus(t("status.unsavedChanges"));
 
   if (saveTimer !== null) {
     window.clearTimeout(saveTimer);
@@ -2517,7 +5256,7 @@ async function flushPendingSave({ flash = false }: { flash?: boolean } = {}): Pr
 
   if (!queuedNoteId) {
     if (flash) {
-      flashStatus("Сохранено");
+      flashStatus(t("status.saved"));
     }
     return true;
   }
@@ -2544,7 +5283,7 @@ function enqueueSave(noteId: string, flash: boolean): Promise<boolean> {
 
     try {
       saveInFlight = true;
-      setStatus("Сохранение...");
+      setStatus(t("status.saving"));
       const saved = await api.updateNote(noteId, payload);
       const currentNote = state.vault.notes.find((item) => item.id === noteId);
       const hasNewerLocalChanges = currentNote !== undefined && hasDivergedFromPayload(currentNote, payload);
@@ -2557,7 +5296,7 @@ function enqueueSave(noteId: string, flash: boolean): Promise<boolean> {
       }
 
       if (flash) {
-        flashStatus("Сохранено в vault");
+        flashStatus(t("status.savedInVault"));
       } else {
         setStatus(getBaseStatusLabel());
       }
@@ -2566,7 +5305,7 @@ function enqueueSave(noteId: string, flash: boolean): Promise<boolean> {
     } catch (error) {
       console.error(error);
       pendingSaveNoteId = noteId;
-      flashStatus(getErrorMessage(error, "Ошибка сохранения"));
+      flashStatus(getErrorMessage(error, t("error.save")));
       return false;
     } finally {
       saveInFlight = false;
@@ -2617,11 +5356,28 @@ function getSelectedNote(): Note | null {
 }
 
 function getWorkspaceTabs(): WorkspaceTab[] {
-  return state.tabs.tabs.filter((tab) => findNoteById(tab.noteId) !== null);
+  return state.tabs.tabs;
 }
 
 function getActiveWorkspaceTab(): WorkspaceTab | null {
-  return state.tabs.tabs.find((tab) => tab.noteId === state.tabs.activeTabId) ?? null;
+  return state.tabs.tabs.find((tab) => tab.id === state.tabs.activeTabId) ?? null;
+}
+
+function findWorkspaceTab(tabId: string): WorkspaceTab | null {
+  return state.tabs.tabs.find((tab) => tab.id === tabId) ?? null;
+}
+
+function getWorkspaceTabConnectionId(tab: WorkspaceTab): string | null {
+  return tab.connectionId ?? getActiveConnectionId() ?? null;
+}
+
+function isTabInActiveConnection(tab: WorkspaceTab): boolean {
+  const activeConnectionId = getActiveConnectionId();
+  if (!activeConnectionId) {
+    return false;
+  }
+
+  return getWorkspaceTabConnectionId(tab) === activeConnectionId;
 }
 
 function findNoteById(noteId: string): Note | null {
@@ -2629,24 +5385,94 @@ function findNoteById(noteId: string): Note | null {
 }
 
 function isWorkspaceTabOpen(noteId: string): boolean {
-  return state.tabs.tabs.some((tab) => tab.noteId === noteId);
+  return state.tabs.tabs.some((tab) => tab.noteId === noteId && isTabInActiveConnection(tab));
 }
 
-function ensureWorkspaceTab(noteId: string): void {
-  if (!findNoteById(noteId)) {
+function findWorkspaceTabByNoteId(noteId: string, connectionId = getActiveConnectionId()): WorkspaceTab | null {
+  return state.tabs.tabs.find((tab) => tab.noteId === noteId && getWorkspaceTabConnectionId(tab) === connectionId) ?? null;
+}
+
+function ensureWorkspaceTab(
+  noteId: string,
+  options: { replaceActive?: boolean; forceNew?: boolean } = {}
+): void {
+  const note = findNoteById(noteId);
+  if (!note) {
     return;
   }
 
-  if (!isWorkspaceTabOpen(noteId)) {
-    state.tabs.tabs = [...state.tabs.tabs, { noteId, pinned: false }];
+  const activeConnectionId = getActiveConnectionId();
+  const existingTab = findWorkspaceTabByNoteId(noteId, activeConnectionId);
+  const activeTab = getActiveWorkspaceTab();
+
+  if (options.forceNew) {
+    const baseId = activeConnectionId && activeConnectionId !== "default"
+      ? `${activeConnectionId}:${noteId}`
+      : noteId;
+    let nextId = baseId;
+    let counter = 2;
+    while (findWorkspaceTab(nextId)) {
+      nextId = `${baseId}::${counter}`;
+      counter += 1;
+    }
+
+    state.tabs.tabs = [...state.tabs.tabs, {
+      id: nextId,
+      noteId,
+      title: note.title,
+      folderPath: note.folderPath,
+      pinned: false,
+      connectionId: activeConnectionId,
+    }];
+    state.tabs.activeTabId = nextId;
+    return;
   }
 
-  state.tabs.activeTabId = noteId;
+  if (options.replaceActive && activeTab && isTabInActiveConnection(activeTab)) {
+    if (existingTab && existingTab.id !== activeTab.id) {
+      state.tabs.activeTabId = existingTab.id;
+      return;
+    }
+
+    state.tabs.tabs = state.tabs.tabs.map((tab) =>
+      tab.id === activeTab.id
+        ? {
+            ...tab,
+            id: activeConnectionId && activeConnectionId !== "default" ? `${activeConnectionId}:${noteId}` : noteId,
+            noteId,
+            title: note.title,
+            folderPath: note.folderPath,
+            connectionId: activeConnectionId,
+          }
+        : tab
+    );
+    state.tabs.activeTabId = activeConnectionId && activeConnectionId !== "default" ? `${activeConnectionId}:${noteId}` : noteId;
+    return;
+  }
+
+  if (!existingTab) {
+    state.tabs.tabs = [...state.tabs.tabs, {
+      id: activeConnectionId && activeConnectionId !== "default" ? `${activeConnectionId}:${noteId}` : noteId,
+      noteId,
+      title: note.title,
+      folderPath: note.folderPath,
+      pinned: false,
+      connectionId: activeConnectionId,
+    }];
+  }
+
+  state.tabs.activeTabId = state.tabs.tabs.find((tab) => tab.noteId === noteId && isTabInActiveConnection(tab))?.id
+    ?? (activeConnectionId && activeConnectionId !== "default" ? `${activeConnectionId}:${noteId}` : noteId);
 }
 
-async function activateWorkspaceTab(noteId: string): Promise<void> {
-  if (!findNoteById(noteId)) {
+async function activateWorkspaceTab(tabId: string): Promise<void> {
+  const tab = findWorkspaceTab(tabId);
+  if (!tab) {
     return;
+  }
+
+  if (!isRestoringNavigation) {
+    pushNavigationEntry(captureNavigationEntry());
   }
 
   commitCurrentTitleDraft();
@@ -2656,25 +5482,33 @@ async function activateWorkspaceTab(noteId: string): Promise<void> {
   }
 
   try {
-    applyWorkspaceTabsSnapshot(await api.activateWorkspaceTab(noteId));
+    applyWorkspaceTabsSnapshot(await api.activateWorkspaceTab(tabId));
   } catch (error) {
     console.error(error);
-    state.tabs.activeTabId = noteId;
+    state.tabs.activeTabId = tabId;
   }
-  syncSelectedNoteFromTabs(noteId);
+
+  const targetConnectionId = getWorkspaceTabConnectionId(tab);
+  if (targetConnectionId && targetConnectionId !== getActiveConnectionId()) {
+    state.workspace.activeConnectionId = targetConnectionId;
+    await reloadVault(tab.noteId, { preferredConnectionId: targetConnectionId });
+    return;
+  }
+
+  syncSelectedNoteFromTabs(tab.noteId);
   render();
 }
 
-async function toggleWorkspaceTabPin(noteId: string): Promise<void> {
-  const tab = state.tabs.tabs.find((item) => item.noteId === noteId);
+async function toggleWorkspaceTabPin(tabId: string): Promise<void> {
+  const tab = findWorkspaceTab(tabId);
   const nextPinned = !(tab?.pinned ?? false);
 
   try {
-    applyWorkspaceTabsSnapshot(await api.setWorkspaceTabPinned(noteId, nextPinned));
+    applyWorkspaceTabsSnapshot(await api.setWorkspaceTabPinned(tabId, nextPinned));
   } catch (error) {
     console.error(error);
     state.tabs.tabs = state.tabs.tabs.map((item) =>
-      item.noteId === noteId
+      item.id === tabId
         ? { ...item, pinned: nextPinned }
         : item
     );
@@ -2683,73 +5517,80 @@ async function toggleWorkspaceTabPin(noteId: string): Promise<void> {
   renderWorkspaceTabs();
 }
 
-async function closeWorkspaceTab(noteId: string): Promise<void> {
-  const fallbackNoteId = getWorkspaceTabFallbackNoteId(noteId);
+async function closeWorkspaceTab(tabId: string): Promise<void> {
+  const tab = findWorkspaceTab(tabId);
+  const fallbackTabId = getWorkspaceTabFallbackTabId(tabId);
+  const fallbackNoteId = findWorkspaceTab(fallbackTabId ?? "")?.noteId ?? null;
 
   try {
-    applyWorkspaceTabsSnapshot(await api.closeWorkspaceTab(noteId));
+    applyWorkspaceTabsSnapshot(await api.closeWorkspaceTab(tabId));
   } catch (error) {
     console.error(error);
-    removeWorkspaceTabReference(noteId, fallbackNoteId);
+    removeWorkspaceTabReference(tabId, fallbackTabId);
   }
 
-  syncSelectedNoteFromTabs(fallbackNoteId ?? noteId);
-  render();
-}
-
-function removeWorkspaceTabReference(noteId: string, fallbackNoteId: string | null): void {
-  state.tabs.tabs = state.tabs.tabs.filter((tab) => tab.noteId !== noteId);
-
-  if (state.tabs.activeTabId !== noteId) {
+  if (tab?.connectionId && tab.connectionId !== getActiveConnectionId()) {
+    renderWorkspaceTabs();
     return;
   }
 
-  if (fallbackNoteId && isWorkspaceTabOpen(fallbackNoteId)) {
-    state.tabs.activeTabId = fallbackNoteId;
+  syncSelectedNoteFromTabs(fallbackNoteId ?? tab?.noteId ?? null);
+  render();
+}
+
+function removeWorkspaceTabReference(tabId: string, fallbackTabId: string | null): void {
+  state.tabs.tabs = state.tabs.tabs.filter((tab) => tab.id !== tabId);
+
+  if (state.tabs.activeTabId !== tabId) {
+    return;
+  }
+
+  if (fallbackTabId && findWorkspaceTab(fallbackTabId)) {
+    state.tabs.activeTabId = fallbackTabId;
     return;
   }
 
   state.tabs.activeTabId = null;
 }
 
-function getWorkspaceTabFallbackNoteId(noteId: string): string | null {
-  const index = state.tabs.tabs.findIndex((tab) => tab.noteId === noteId);
+function getWorkspaceTabFallbackTabId(tabId: string): string | null {
+  const index = state.tabs.tabs.findIndex((tab) => tab.id === tabId);
   if (index === -1) {
     return state.tabs.activeTabId;
   }
 
-  return state.tabs.tabs[index + 1]?.noteId
-    ?? state.tabs.tabs[index - 1]?.noteId
+  return state.tabs.tabs[index + 1]?.id
+    ?? state.tabs.tabs[index - 1]?.id
     ?? null;
 }
 
 async function moveWorkspaceTab(
-  draggedNoteId: string,
+  draggedTabId: string,
   targetTab: HTMLElement | null,
   clientX: number
 ): Promise<void> {
-  const orderedIds = state.tabs.tabs.map((tab) => tab.noteId);
-  if (!orderedIds.includes(draggedNoteId)) {
+  const orderedIds = state.tabs.tabs.map((tab) => tab.id);
+  if (!orderedIds.includes(draggedTabId)) {
     return;
   }
 
-  const nextIds = orderedIds.filter((noteId) => noteId !== draggedNoteId);
+  const nextIds = orderedIds.filter((tabId) => tabId !== draggedTabId);
   if (!targetTab) {
-    nextIds.push(draggedNoteId);
+    nextIds.push(draggedTabId);
   } else {
     const targetNoteId = targetTab.dataset.workspaceTabId?.trim();
-    if (!targetNoteId || targetNoteId === draggedNoteId) {
+    if (!targetNoteId || targetNoteId === draggedTabId) {
       return;
     }
 
     const targetIndex = nextIds.indexOf(targetNoteId);
     if (targetIndex === -1) {
-      nextIds.push(draggedNoteId);
+      nextIds.push(draggedTabId);
     } else {
       const { left, width } = targetTab.getBoundingClientRect();
       const insertAfter = clientX > left + width / 2;
       const insertIndex = insertAfter ? targetIndex + 1 : targetIndex;
-      nextIds.splice(insertIndex, 0, draggedNoteId);
+      nextIds.splice(insertIndex, 0, draggedTabId);
     }
   }
 
@@ -2758,7 +5599,7 @@ async function moveWorkspaceTab(
   } catch (error) {
     console.error(error);
     state.tabs.tabs = nextIds
-      .map((noteId) => state.tabs.tabs.find((tab) => tab.noteId === noteId))
+      .map((tabId) => state.tabs.tabs.find((tab) => tab.id === tabId))
       .filter((tab): tab is WorkspaceTab => tab !== undefined);
   }
 
@@ -2782,9 +5623,17 @@ function clearWorkspaceTabDragState(): void {
 
 function reconcileWorkspaceTabs(preferredNoteId: string | null = state.vault.selectedNoteId): void {
   const validNoteIds = new Set(state.vault.notes.map((note) => note.id));
-  state.tabs.tabs = state.tabs.tabs.filter((tab) => validNoteIds.has(tab.noteId));
+  const activeConnectionId = getActiveConnectionId();
+  state.tabs.tabs = state.tabs.tabs.filter((tab) => {
+    if (!isTabInActiveConnection(tab)) {
+      return true;
+    }
 
-  if (state.tabs.activeTabId && !validNoteIds.has(state.tabs.activeTabId)) {
+    return validNoteIds.has(tab.noteId) && (!activeConnectionId || getWorkspaceTabConnectionId(tab) === activeConnectionId);
+  });
+
+  const activeTab = getActiveWorkspaceTab();
+  if (activeTab && isTabInActiveConnection(activeTab) && !validNoteIds.has(activeTab.noteId)) {
     state.tabs.activeTabId = null;
   }
 
@@ -2796,7 +5645,7 @@ function reconcileWorkspaceTabs(preferredNoteId: string | null = state.vault.sel
   }
 
   if (!state.tabs.activeTabId && state.tabs.tabs.length > 0) {
-    state.tabs.activeTabId = state.tabs.tabs[0]?.noteId ?? null;
+    state.tabs.activeTabId = state.tabs.tabs[0]?.id ?? null;
   }
 
   syncSelectedNoteFromTabs(preferredNoteId);
@@ -2804,8 +5653,13 @@ function reconcileWorkspaceTabs(preferredNoteId: string | null = state.vault.sel
 
 function applyWorkspaceTabsSnapshot(snapshot: TabsSessionSnapshot): void {
   state.tabs.tabs = snapshot.tabs.map((tab) => ({
+    id: tab.id,
     noteId: tab.noteId,
+    title: tab.title,
+    folderPath: tab.folderPath,
     pinned: tab.pinned,
+    connectionId: tab.connectionId,
+    connectionName: tab.connectionName,
   }));
   state.tabs.activeTabId = snapshot.activeTabId;
   state.tabs.initialized = true;
@@ -2832,12 +5686,15 @@ async function hydrateWorkspaceTabs(preferredNoteId: string | null = state.vault
   }
 }
 
-async function syncWorkspaceTabOpen(noteId: string): Promise<void> {
+async function syncWorkspaceTabOpen(
+  noteId: string,
+  options: { replaceActive?: boolean; forceNew?: boolean } = {}
+): Promise<void> {
   try {
-    applyWorkspaceTabsSnapshot(await api.openWorkspaceTab(noteId));
+    applyWorkspaceTabsSnapshot(await api.openWorkspaceTab(noteId, options));
   } catch (error) {
     console.error(error);
-    ensureWorkspaceTab(noteId);
+    ensureWorkspaceTab(noteId, options);
   }
 }
 
@@ -2846,24 +5703,23 @@ function remapWorkspaceTabNoteId(previousNoteId: string, nextNoteId: string): vo
     return;
   }
 
-  let nextActiveTabId = state.tabs.activeTabId;
+  const activeConnectionId = getActiveConnectionId();
   state.tabs.tabs = state.tabs.tabs.map((tab) => {
-    if (tab.noteId !== previousNoteId) {
+    if (tab.noteId !== previousNoteId || getWorkspaceTabConnectionId(tab) !== activeConnectionId) {
       return tab;
     }
 
-    nextActiveTabId = tab.noteId === state.tabs.activeTabId ? nextNoteId : nextActiveTabId;
     return {
       ...tab,
       noteId: nextNoteId,
     };
   });
-  state.tabs.activeTabId = nextActiveTabId;
 }
 
 function syncSelectedNoteFromTabs(fallbackNoteId: string | null = state.vault.selectedNoteId): void {
-  if (state.tabs.activeTabId && findNoteById(state.tabs.activeTabId)) {
-    state.vault.selectedNoteId = state.tabs.activeTabId;
+  const activeTab = getActiveWorkspaceTab();
+  if (activeTab && isTabInActiveConnection(activeTab) && findNoteById(activeTab.noteId)) {
+    state.vault.selectedNoteId = activeTab.noteId;
     syncSelectedFolderWithSelectedNote();
     return;
   }
@@ -2983,7 +5839,11 @@ function getPersistableTitle(note: Note): string {
 }
 
 function hasUnsavedChanges(): boolean {
-  return pendingSaveNoteId !== null || saveTimer !== null || saveInFlight || hasUncommittedTitleDraft();
+  return pendingSaveNoteId !== null
+    || saveTimer !== null
+    || saveInFlight
+    || hasUncommittedTitleDraft()
+    || hasPendingMemoryChanges();
 }
 
 function hasDivergedFromPayload(
@@ -3048,7 +5908,7 @@ function getTitleConflict(note: Note, folderPath: string): string | null {
     item.title.toLowerCase() === draftTitle.toLowerCase()
   );
 
-  return conflicts ? "Название уже занято" : null;
+  return conflicts ? t("error.titleTaken") : null;
 }
 
 function hasTitleConflict(note: Note, folderPath: string): boolean {
@@ -3074,7 +5934,7 @@ function hideTitleHint(): void {
 function renderFolderSelect(note: Note): void {
   const options = getAllFolderOptions(state.vault.folders)
     .map((folderPath) => {
-      const label = folderPath || "Root";
+      const label = folderPath || getRootLabel();
       return `<option value="${escapeAttribute(folderPath)}">${escapeHtml(label)}</option>`;
     })
     .join("");
@@ -3108,16 +5968,7 @@ function getNoteTags(note: Note): string[] {
 }
 
 function getNoteMetadata(note: Note): { links: { link: string }[]; backlinks: string[]; tags: string[] } {
-  const file = obsidianApp.vault.getAbstractFileByPath(note.id);
-  if (!file) {
-    return {
-      links: [],
-      backlinks: [],
-      tags: [],
-    };
-  }
-
-  return obsidianApp.metadataCache.getFileCache(file) ?? {
+  return wiki.getMetadata(note, state.vault.notes) ?? {
     links: [],
     backlinks: [],
     tags: [],
@@ -3129,7 +5980,7 @@ function applyTagFilter(tag: string): void {
   state.query = query.toLowerCase();
   elements.searchInput.value = query;
   renderNoteList();
-  flashStatus(`Фильтр по #${tag}`);
+  flashStatus(t("status.filterTag", { tag }));
 }
 
 function renderBacklinks(note: Note): void {
@@ -3181,13 +6032,13 @@ async function pollWorkspaceState(): Promise<void> {
 
   if (hasUnsavedChanges()) {
     state.hasExternalChanges = true;
-    setStatus("Есть внешние изменения");
+    setStatus(t("status.externalChanges"));
     return;
   }
 
-  setStatus("Внешние изменения, обновление...");
+  setStatus(t("status.externalReloading"));
   await reloadVault(state.vault.selectedNoteId);
-  flashStatus("Vault обновлён с диска");
+  flashStatus(t("status.vaultUpdated"));
 }
 
 async function maybeReloadAfterExternalChanges(): Promise<void> {
@@ -3195,14 +6046,25 @@ async function maybeReloadAfterExternalChanges(): Promise<void> {
     return;
   }
 
-  setStatus("Применение внешних изменений...");
+  setStatus(t("status.applyingExternal"));
   await reloadVault(state.vault.selectedNoteId);
-  flashStatus("Внешние изменения применены");
+  flashStatus(t("status.externalApplied"));
 }
 
 async function safeGetWorkspaceState(): Promise<{ revision: number; changedAt: string } | null> {
   try {
-    return await workspaceClient.getWorkspaceState();
+    const activeConnectionId = getActiveConnectionId();
+    const suffix = activeConnectionId ? `?connectionId=${encodeURIComponent(activeConnectionId)}` : "";
+    const snapshot = await requestJson<{
+      revision: number;
+      changedAt: string;
+      connections?: Array<{ connectionId: string; revision: number; changedAt: string }>;
+    }>(`/api/workspace/state${suffix}`);
+    const connectionState = snapshot.connections?.find((item) => item.connectionId === activeConnectionId);
+    return {
+      revision: connectionState?.revision ?? snapshot.revision,
+      changedAt: connectionState?.changedAt ?? snapshot.changedAt,
+    };
   } catch (error) {
     console.error(error);
     return null;
@@ -3226,11 +6088,63 @@ function persistPendingChangesForUnload(): void {
     return;
   }
 
-  workspaceClient.updateNoteKeepalive(noteId, {
-    title: getPersistableTitle(note),
-    content: note.content,
+  const activeConnectionId = getActiveConnectionId();
+  const keepaliveUrl = activeConnectionId
+    ? `/api/notes/${encodeURIComponent(noteId)}?connectionId=${encodeURIComponent(activeConnectionId)}`
+    : `/api/notes/${encodeURIComponent(noteId)}`;
+  void fetch(keepaliveUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      title: getPersistableTitle(note),
+      content: note.content,
+      connectionId: activeConnectionId,
+    }),
+    keepalive: true,
   });
   pendingSaveNoteId = null;
+
+  persistMemoryChangesForUnload("global");
+  persistMemoryChangesForUnload("workspace");
+}
+
+function persistMemoryChangesForUnload(scope: "global" | "workspace"): void {
+  const document = getMemoryDocument(scope);
+  const timer = scope === "global" ? globalMemorySaveTimer : workspaceMemorySaveTimer;
+  if (timer !== null) {
+    window.clearTimeout(timer);
+    if (scope === "global") {
+      globalMemorySaveTimer = null;
+    } else {
+      workspaceMemorySaveTimer = null;
+    }
+  }
+
+  if (document.content === document.savedContent) {
+    return;
+  }
+
+  const url = scope === "global"
+    ? "/api/memory/global"
+    : document.connectionId
+      ? `/api/memory/workspace?connectionId=${encodeURIComponent(document.connectionId)}`
+      : null;
+  if (!url) {
+    return;
+  }
+
+  void fetch(url, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      content: document.content,
+    }),
+    keepalive: true,
+  });
 }
 
 function toggleFolderCollapse(folderPath: string): void {
@@ -3384,7 +6298,7 @@ function renderFolderTreeNode(node: FolderTreeNode, depth: number): HTMLLIElemen
   const isActive = node.path === state.vault.selectedFolderPath;
   item.innerHTML = `
     <div class="folder-list__row" style="--folder-depth:${depth}">
-      <button type="button" class="folder-list__toggle${hasChildren ? "" : " is-empty"}" data-folder-toggle="${escapeAttribute(node.path)}" aria-label="${isCollapsed ? "Развернуть" : "Свернуть"} папку">
+      <button type="button" class="folder-list__toggle${hasChildren ? "" : " is-empty"}" data-folder-toggle="${escapeAttribute(node.path)}" aria-label="${escapeAttribute(isCollapsed ? t("folder.expand") : t("folder.collapse"))}">
         <span class="folder-list__chevron">${hasChildren ? (isCollapsed ? "▸" : "▾") : ""}</span>
       </button>
       <button type="button" class="folder-list__button${isActive ? " is-active" : ""}" data-folder-path="${escapeAttribute(node.path)}">
@@ -3421,7 +6335,7 @@ function renderExplorerFolderNode(
   const isActive = node.path === state.vault.selectedFolderPath;
   item.innerHTML = `
     <div class="folder-list__row note-tree__folder-row" style="--folder-depth:${depth}">
-      <button type="button" class="folder-list__toggle${hasChildren ? "" : " is-empty"}" data-folder-toggle="${escapeAttribute(node.path)}" aria-label="${isCollapsed ? "Развернуть" : "Свернуть"} папку">
+      <button type="button" class="folder-list__toggle${hasChildren ? "" : " is-empty"}" data-folder-toggle="${escapeAttribute(node.path)}" aria-label="${escapeAttribute(isCollapsed ? t("folder.expand") : t("folder.collapse"))}">
         <span class="folder-list__chevron">${hasChildren ? (isCollapsed ? "▸" : "▾") : ""}</span>
       </button>
       <button type="button" class="folder-list__button${isActive ? " is-active" : ""}" data-folder-path="${escapeAttribute(node.path)}">
@@ -3595,29 +6509,129 @@ function hasUncommittedTitleDraft(): boolean {
 }
 
 const api = {
+  async listWorkspaceConnections(): Promise<WorkspaceConnection[]> {
+    return requestJson<WorkspaceConnection[]>("/api/workspace/connections");
+  },
+
+  async getGlobalMemory(): Promise<MemoryDocumentState> {
+    const payload = await requestJson<AppMemoryDocument>("/api/memory/global");
+    return toMemoryDocumentState(payload, null);
+  },
+
+  async updateGlobalMemory(content: string): Promise<MemoryDocumentState> {
+    const payload = await requestJson<AppMemoryDocument>("/api/memory/global", {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    });
+    return toMemoryDocumentState(payload, null);
+  },
+
+  async deleteGlobalMemory(): Promise<void> {
+    await requestJson<{ ok: true }>("/api/memory/global", {
+      method: "DELETE",
+    });
+  },
+
+  async getWorkspaceMemory(connectionId: string): Promise<MemoryDocumentState> {
+    const payload = await requestJson<AppMemoryDocument & { connectionName?: string }>(
+      `/api/memory/workspace?connectionId=${encodeURIComponent(connectionId)}`
+    );
+    return toMemoryDocumentState(payload, payload.connectionName ?? null);
+  },
+
+  async updateWorkspaceMemory(connectionId: string, content: string): Promise<MemoryDocumentState> {
+    const payload = await requestJson<AppMemoryDocument & { connectionName?: string }>(
+      `/api/memory/workspace?connectionId=${encodeURIComponent(connectionId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ content }),
+      }
+    );
+    return toMemoryDocumentState(payload, payload.connectionName ?? null);
+  },
+
+  async deleteWorkspaceMemory(connectionId: string): Promise<void> {
+    await requestJson<{ ok: true }>(`/api/memory/workspace?connectionId=${encodeURIComponent(connectionId)}`, {
+      method: "DELETE",
+    });
+  },
+
+  async createWorkspaceConnection(payload: {
+    name: string;
+    kind: WorkspaceConnectionKind;
+    rootPath?: string;
+    codeRoot?: string;
+    notesRoot?: string;
+    isDefault: boolean;
+  }): Promise<WorkspaceConnection> {
+    return requestJson<WorkspaceConnection>("/api/workspace/connections", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async updateWorkspaceConnection(
+    connectionId: string,
+    payload: {
+      name: string;
+      kind: WorkspaceConnectionKind;
+      rootPath?: string;
+      codeRoot?: string;
+      notesRoot?: string;
+      isDefault: boolean;
+    }
+  ): Promise<WorkspaceConnection> {
+    return requestJson<WorkspaceConnection>(`/api/workspace/connections/${encodeURIComponent(connectionId)}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async deleteWorkspaceConnection(connectionId: string): Promise<void> {
+    await requestJson<{ ok: true }>(`/api/workspace/connections/${encodeURIComponent(connectionId)}`, {
+      method: "DELETE",
+    });
+  },
+
+  async pickDirectory(payload: { title?: string; defaultPath?: string }): Promise<string | null> {
+    const response = await requestJson<{ path: string | null }>("/api/system/pick-directory", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    return response.path;
+  },
+
   async createNote(payload: { title: string; content: string; folderPath?: string }): Promise<Note> {
-    return obsidianApp.createNote(payload);
+    return workspaceClient.createNote(payload, { connectionId: getActiveConnectionId() });
   },
 
   async updateNote(
     noteId: string,
     payload: { title: string; content: string; folderPath?: string }
   ): Promise<Note> {
-    return obsidianApp.updateNote(noteId, payload);
+    return workspaceClient.updateNote(noteId, payload, { connectionId: getActiveConnectionId() });
   },
 
   async deleteNote(noteId: string): Promise<void> {
-    await obsidianApp.deleteNote(noteId);
+    await workspaceClient.deleteNote(noteId, { connectionId: getActiveConnectionId() });
   },
 
   async getWorkspaceTabs(): Promise<TabsSessionSnapshot> {
     return requestJson<TabsSessionSnapshot>("/api/workspace/tabs");
   },
 
-  async openWorkspaceTab(noteId: string): Promise<TabsSessionSnapshot> {
+  async openWorkspaceTab(
+    noteId: string,
+    options: { replaceActive?: boolean; forceNew?: boolean } = {}
+  ): Promise<TabsSessionSnapshot> {
     return requestJson<TabsSessionSnapshot>("/api/workspace/tabs/open", {
       method: "POST",
-      body: JSON.stringify({ noteId }),
+      body: JSON.stringify({
+        noteId,
+        connectionId: getActiveConnectionId(),
+        replaceActive: options.replaceActive,
+        forceNew: options.forceNew,
+      }),
     });
   },
 
@@ -3650,10 +6664,32 @@ const api = {
   },
 };
 
+function toMemoryDocumentState(
+  payload: AppMemoryDocument,
+  connectionName: string | null
+): MemoryDocumentState {
+  return {
+    ...payload,
+    connectionName,
+    savedContent: payload.content,
+    loading: false,
+    saving: false,
+    error: null,
+  };
+}
+
 function getErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof RequestError) {
     if (error.status === 409 && error.message === "A note with this title already exists") {
-      return "Название уже занято";
+      return t("error.titleTaken");
+    }
+
+    if (error.status === 404 && error.message === "Connection not found") {
+      return t("error.connectionMissing");
+    }
+
+    if (error.status === 501 && error.message.trim()) {
+      return error.message;
     }
 
     if (error.message.trim()) {
@@ -3662,6 +6698,348 @@ function getErrorMessage(error: unknown, fallback: string): string {
   }
 
   return fallback;
+}
+
+function getMemoryDocument(scope: "global" | "workspace"): MemoryDocumentState {
+  return scope === "global" ? state.memory.global : state.memory.workspace;
+}
+
+function isMemoryDirty(scope: "global" | "workspace"): boolean {
+  const document = getMemoryDocument(scope);
+  return document.content !== document.savedContent;
+}
+
+function hasPendingMemoryChanges(): boolean {
+  return globalMemorySaveTimer !== null
+    || workspaceMemorySaveTimer !== null
+    || state.memory.global.saving
+    || state.memory.workspace.saving
+    || isMemoryDirty("global")
+    || isMemoryDirty("workspace");
+}
+
+function updateMemoryContent(scope: "global" | "workspace", content: string): void {
+  const document = getMemoryDocument(scope);
+  document.content = content;
+  document.error = null;
+  queueMemorySave(scope);
+  renderMemoryView();
+  setStatus(t("status.unsavedChanges"));
+}
+
+function queueMemorySave(scope: "global" | "workspace", delayMs = SAVE_DEBOUNCE_MS): void {
+  const timer = scope === "global" ? globalMemorySaveTimer : workspaceMemorySaveTimer;
+  if (timer !== null) {
+    window.clearTimeout(timer);
+  }
+
+  const nextTimer = window.setTimeout(() => {
+    if (scope === "global") {
+      globalMemorySaveTimer = null;
+    } else {
+      workspaceMemorySaveTimer = null;
+    }
+
+    void enqueueMemorySave(scope, false);
+  }, delayMs);
+
+  if (scope === "global") {
+    globalMemorySaveTimer = nextTimer;
+  } else {
+    workspaceMemorySaveTimer = nextTimer;
+  }
+}
+
+async function flushAllPendingSaves({ flash = false }: { flash?: boolean } = {}): Promise<boolean> {
+  const notesSaved = await flushPendingSave({ flash: false });
+  if (!notesSaved) {
+    return false;
+  }
+
+  return flushPendingMemorySaves({ flash });
+}
+
+async function flushPendingMemorySaves(options: {
+  scopes?: Array<"global" | "workspace">;
+  flash?: boolean;
+} = {}): Promise<boolean> {
+  const scopes = options.scopes ?? ["global", "workspace"];
+  const results = await Promise.all(scopes.map((scope) => flushPendingMemorySave(scope, options.flash === true)));
+  return results.every(Boolean);
+}
+
+async function flushPendingMemorySave(scope: "global" | "workspace", flash: boolean): Promise<boolean> {
+  const timer = scope === "global" ? globalMemorySaveTimer : workspaceMemorySaveTimer;
+  if (timer !== null) {
+    window.clearTimeout(timer);
+    if (scope === "global") {
+      globalMemorySaveTimer = null;
+    } else {
+      workspaceMemorySaveTimer = null;
+    }
+  }
+
+  if (!isMemoryDirty(scope) && !getMemoryDocument(scope).saving) {
+    if (flash) {
+      flashStatus(t("status.saved"));
+    }
+    return true;
+  }
+
+  return enqueueMemorySave(scope, flash);
+}
+
+async function enqueueMemorySave(scope: "global" | "workspace", flash: boolean): Promise<boolean> {
+  const document = getMemoryDocument(scope);
+  if (document.loading || document.saving) {
+    return true;
+  }
+
+  if (scope === "workspace" && !document.connectionId) {
+    return true;
+  }
+
+  if (!isMemoryDirty(scope)) {
+    return true;
+  }
+
+  document.saving = true;
+  document.error = null;
+  renderMemoryView();
+  setStatus(t("status.saving"));
+
+  try {
+    const targetConnectionId = document.connectionId;
+    const saved = scope === "global"
+      ? await api.updateGlobalMemory(document.content)
+      : await api.updateWorkspaceMemory(targetConnectionId!, document.content);
+    if (scope === "workspace" && state.memory.workspace.connectionId !== targetConnectionId) {
+      return true;
+    }
+    applyMemoryDocument(scope, saved);
+    if (flash) {
+      flashStatus(t("status.memorySaved"));
+    } else {
+      setStatus(getBaseStatusLabel());
+    }
+    return true;
+  } catch (error) {
+    console.error(error);
+    document.saving = false;
+    document.error = getErrorMessage(error, t("error.memorySave"));
+    renderMemoryView();
+    flashStatus(document.error);
+    return false;
+  }
+}
+
+function applyMemoryDocument(scope: "global" | "workspace", document: MemoryDocumentState): void {
+  const current = getMemoryDocument(scope);
+  const nextContent = current.content !== current.savedContent ? current.content : document.content;
+  const nextSavedContent = document.content;
+
+  if (scope === "global") {
+    state.memory.global = {
+      ...document,
+      content: nextContent,
+      savedContent: nextSavedContent,
+      saving: false,
+      loading: false,
+      error: null,
+    };
+  } else {
+    if (state.memory.workspace.connectionId && document.connectionId !== state.memory.workspace.connectionId) {
+      return;
+    }
+
+    state.memory.workspace = {
+      ...document,
+      content: nextContent,
+      savedContent: nextSavedContent,
+      saving: false,
+      loading: false,
+      error: null,
+    };
+  }
+
+  renderMemoryView();
+}
+
+async function ensureMemoryLoaded(force = false): Promise<void> {
+  await Promise.all([
+    reloadMemoryScope("global", { force }),
+    reloadMemoryScope("workspace", { force }),
+  ]);
+  state.memory.initialized = true;
+}
+
+async function handleReloadMemory(force = false): Promise<void> {
+  const saved = await flushPendingMemorySaves();
+  if (!saved) {
+    return;
+  }
+
+  setStatus(t("status.memoryReloading"));
+  await ensureMemoryLoaded(force);
+  flashStatus(t("memory.synced"));
+}
+
+async function reloadMemoryScope(
+  scope: "global" | "workspace",
+  options: { force?: boolean } = {}
+): Promise<void> {
+  const document = getMemoryDocument(scope);
+  if (!options.force && document.loading) {
+    return;
+  }
+
+  if (scope === "workspace") {
+    const connection = getActiveConnection();
+    if (!connection) {
+      state.memory.workspace = createEmptyMemoryDocument("workspace");
+      renderMemoryView();
+      return;
+    }
+
+    if (!options.force && document.connectionId === connection.id && state.memory.initialized) {
+      return;
+    }
+
+    state.memory.workspace = {
+      ...state.memory.workspace,
+      connectionId: connection.id,
+      connectionName: connection.name,
+      loading: true,
+      saving: false,
+      error: null,
+      content: "",
+      savedContent: "",
+      exists: false,
+      createdAt: null,
+      updatedAt: null,
+    };
+    renderMemoryView();
+
+    try {
+      const loaded = await api.getWorkspaceMemory(connection.id);
+      if (state.memory.workspace.connectionId !== connection.id) {
+        return;
+      }
+
+      applyMemoryDocument("workspace", loaded);
+    } catch (error) {
+      console.error(error);
+      state.memory.workspace.loading = false;
+      state.memory.workspace.error = getErrorMessage(error, t("error.memoryWorkspaceLoad"));
+      renderMemoryView();
+    }
+
+    return;
+  }
+
+  if (!options.force && state.memory.initialized) {
+    return;
+  }
+
+  state.memory.global = {
+    ...state.memory.global,
+    loading: true,
+    saving: false,
+    error: null,
+  };
+  renderMemoryView();
+
+  try {
+    const loaded = await api.getGlobalMemory();
+    applyMemoryDocument("global", loaded);
+  } catch (error) {
+    console.error(error);
+    state.memory.global.loading = false;
+    state.memory.global.error = getErrorMessage(error, t("error.memoryGlobalLoad"));
+    renderMemoryView();
+  }
+}
+
+async function clearMemoryDocument(scope: "global" | "workspace"): Promise<void> {
+  const document = getMemoryDocument(scope);
+  if (scope === "workspace" && !document.connectionId) {
+    return;
+  }
+
+  const confirmed = await confirmAction({
+    title: scope === "global" ? t("memory.clearGlobalTitle") : t("memory.clearWorkspaceTitle"),
+    description: t("memory.clearDescription"),
+    confirmLabel: t("common.clear"),
+  });
+  if (!confirmed) {
+    return;
+  }
+
+  document.saving = true;
+  document.error = null;
+  renderMemoryView();
+
+  try {
+    if (scope === "global") {
+      await api.deleteGlobalMemory();
+      state.memory.global = createEmptyMemoryDocument("global");
+    } else {
+      await api.deleteWorkspaceMemory(document.connectionId!);
+      state.memory.workspace = {
+        ...createEmptyMemoryDocument("workspace"),
+        connectionId: document.connectionId,
+        connectionName: document.connectionName,
+      };
+    }
+
+    renderMemoryView();
+    flashStatus(scope === "global" ? t("memory.clearedGlobal") : t("memory.clearedWorkspace"));
+  } catch (error) {
+    console.error(error);
+    document.saving = false;
+    document.error = getErrorMessage(error, t("error.memoryClear"));
+    renderMemoryView();
+    flashStatus(document.error);
+  }
+}
+
+function getMemoryStateLabel(document: MemoryDocumentState): string {
+  if (document.loading) {
+    return t("memory.state.loading");
+  }
+
+  if (document.saving) {
+    return t("memory.state.saving");
+  }
+
+  if (document.error) {
+    return t("memory.state.error");
+  }
+
+  if (document.content !== document.savedContent) {
+    return t("memory.state.draft");
+  }
+
+  return document.exists ? t("memory.state.ready") : t("memory.state.empty");
+}
+
+function formatMemoryTimestamp(value: string | null): string {
+  if (!value) {
+    return t("memory.notSavedYet");
+  }
+
+  return new Date(value).toLocaleString(state.locale === "ru" ? "ru-RU" : "en-US");
+}
+
+function buildMemoryMetaLabel(): string {
+  const globalWords = countWords(state.memory.global.content);
+  const workspaceWords = countWords(state.memory.workspace.content);
+  const workspaceLabel = state.memory.workspace.connectionName ?? t("memory.noWorkspace");
+  return t("memory.meta", {
+    globalWords,
+    workspaceLabel,
+    workspaceWords,
+  });
 }
 
 function setStatus(label: string): void {
@@ -3681,14 +7059,16 @@ function flashStatus(label: string): void {
 
 function getBaseStatusLabel(): string {
   if (hasUnsavedChanges()) {
-    return "Есть несохранённые изменения";
+    return t("status.unsavedChanges");
   }
 
   if (state.hasExternalChanges) {
-    return "Есть внешние изменения";
+    return t("status.externalChanges");
   }
 
-  return DEFAULT_STATUS;
+  const baseStatus = t("app.status");
+  const activeConnection = getActiveConnection();
+  return activeConnection ? `${baseStatus} · ${activeConnection.name}` : baseStatus;
 }
 
 function buildGraphLayout(
@@ -3770,6 +7150,8 @@ function buildGraphLayout(
 
   return positions;
 }
+
+void bootstrap();
 
 function placeNodesOnRings(
   positions: Map<string, { x: number; y: number }>,
@@ -4094,7 +7476,18 @@ async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text.trim() || `Request failed: ${response.status}`);
+    let message = text.trim() || `Request failed: ${response.status}`;
+
+    try {
+      const payload = JSON.parse(text) as { error?: unknown };
+      if (typeof payload.error === "string" && payload.error.trim()) {
+        message = payload.error;
+      }
+    } catch {
+      // Keep the plain-text fallback.
+    }
+
+    throw new RequestError(response.status, message);
   }
 
   return response.json() as Promise<T>;
@@ -4123,7 +7516,7 @@ function getGraphColorState(): {
   if (state.graph.colorMode === "folder") {
     noteNodes.forEach((node) => {
       const key = node.folderPath || "root";
-      const group = groups.get(key) ?? { label: node.folderPath || "Root", noteIds: [] };
+      const group = groups.get(key) ?? { label: node.folderPath || getRootLabel(), noteIds: [] };
       group.noteIds.push(node.noteId ?? node.id);
       groups.set(key, group);
     });
@@ -4132,7 +7525,7 @@ function getGraphColorState(): {
       const note = state.vault.notes.find((item) => item.id === (node.noteId ?? ""));
       const tags = note ? getNoteTags(note) : [];
       const key = tags[0] ?? "__untagged__";
-      const label = tags[0] ? `#${tags[0]}` : "Untagged";
+      const label = tags[0] ? `#${tags[0]}` : t("graph.untagged");
       const group = groups.get(key) ?? { label, noteIds: [] };
       group.noteIds.push(node.noteId ?? node.id);
       groups.set(key, group);
@@ -4149,7 +7542,7 @@ function getGraphColorState(): {
       const noteId = node.noteId ?? node.id;
       const cluster = clusterByNoteId.get(noteId);
       const key = cluster?.id ?? "__isolated__";
-      const label = cluster ? `Cluster ${cluster.size}` : "Unclustered";
+      const label = cluster ? t("graph.clusterLabel", { size: cluster.size }) : t("graph.unclustered");
       const group = groups.get(key) ?? { label, noteIds: [] };
       group.noteIds.push(noteId);
       groups.set(key, group);
@@ -4371,7 +7764,7 @@ function sanitizeUrl(value: string): string {
 }
 
 function excerpt(content: string): string {
-  return content.replace(/\n+/g, " ").replace(/[#>*`\-[\]]/g, "").trim().slice(0, 88) || "Пустая заметка";
+  return content.replace(/\n+/g, " ").replace(/[#>*`\-[\]]/g, "").trim().slice(0, 88) || t("note.emptyExcerpt");
 }
 
 function countWords(content: string): number {
@@ -4384,7 +7777,7 @@ function countCharacters(content: string): number {
 }
 
 function formatDate(isoString: string): string {
-  return new Intl.DateTimeFormat("ru-RU", {
+  return new Intl.DateTimeFormat(state.locale === "ru" ? "ru-RU" : "en-US", {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(isoString));

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import type {
@@ -6,6 +6,7 @@ import type {
   UpdateWorkspaceConnectionInput,
   WorkspaceConnection,
 } from "./session-types.js";
+import { getWorkspaceConnectionNotesRoot } from "./session-types.js";
 
 interface PersistedConnectionsState {
   connections: WorkspaceConnection[];
@@ -24,35 +25,41 @@ export class WorkspaceConnectionsStore {
   }
 
   listConnections(): WorkspaceConnection[] {
-    return this.state.connections.map((connection) => ({ ...connection }));
+    return this.state.connections.map(cloneConnection);
   }
 
   getConnection(connectionId: string): WorkspaceConnection | null {
-    return this.state.connections.find((connection) => connection.id === connectionId) ?? null;
+    const connection = this.state.connections.find((item) => item.id === connectionId);
+    return connection ? cloneConnection(connection) : null;
   }
 
   getDefaultConnection(): WorkspaceConnection {
-    return this.state.connections.find((connection) => connection.isDefault) ?? this.options.defaultConnection;
+    return cloneConnection(
+      this.state.connections.find((connection) => connection.isDefault) ?? this.options.defaultConnection
+    );
   }
 
   createConnection(input: CreateWorkspaceConnectionInput): WorkspaceConnection {
     const name = readRequiredTrimmedString(input.name, "name");
-    const rootPath = readRequiredTrimmedString(input.rootPath, "rootPath");
     const connectionId = normalizeConnectionId(input.id ?? name);
+    const roots = resolveConnectionRoots(input);
+    validateConnectionRoots(roots);
 
     if (this.state.connections.some((connection) => connection.id === connectionId)) {
       throw new Error(`Connection id already exists: ${connectionId}`);
     }
 
-    if (this.state.connections.some((connection) => connection.rootPath === rootPath)) {
-      throw new Error(`Connection rootPath already exists: ${rootPath}`);
+    if (this.state.connections.some((connection) => getWorkspaceConnectionNotesRoot(connection) === roots.notesRoot)) {
+      throw new Error(`Connection rootPath already exists: ${roots.notesRoot}`);
     }
 
     const connection: WorkspaceConnection = {
       id: connectionId,
       name,
       kind: input.kind,
-      rootPath,
+      rootPath: roots.notesRoot,
+      notesRoot: roots.notesRoot,
+      codeRoot: roots.codeRoot,
       isDefault: input.isDefault === true,
       includeGlobs: cloneStringList(input.includeGlobs),
       excludeGlobs: cloneStringList(input.excludeGlobs),
@@ -67,7 +74,7 @@ export class WorkspaceConnectionsStore {
 
     this.state.connections.push(connection);
     this.persist();
-    return { ...connection };
+    return cloneConnection(connection);
   }
 
   updateConnection(connectionId: string, input: UpdateWorkspaceConnectionInput): WorkspaceConnection {
@@ -77,14 +84,15 @@ export class WorkspaceConnectionsStore {
     }
 
     const previous = this.state.connections[index];
-    const nextRootPath = input.rootPath === undefined ? previous.rootPath : readRequiredTrimmedString(input.rootPath, "rootPath");
     const nextName = input.name === undefined ? previous.name : readRequiredTrimmedString(input.name, "name");
+    const roots = resolveConnectionRoots(input, previous);
+    validateConnectionRoots(roots);
 
     const duplicatePath = this.state.connections.find((connection) =>
-      connection.id !== connectionId && connection.rootPath === nextRootPath
+      connection.id !== connectionId && getWorkspaceConnectionNotesRoot(connection) === roots.notesRoot
     );
     if (duplicatePath) {
-      throw new Error(`Connection rootPath already exists: ${nextRootPath}`);
+      throw new Error(`Connection rootPath already exists: ${roots.notesRoot}`);
     }
 
     if (input.isDefault === true) {
@@ -98,7 +106,9 @@ export class WorkspaceConnectionsStore {
       ...previous,
       name: nextName,
       kind: input.kind ?? previous.kind,
-      rootPath: nextRootPath,
+      rootPath: roots.notesRoot,
+      notesRoot: roots.notesRoot,
+      codeRoot: roots.codeRoot,
       isDefault: input.isDefault ?? previous.isDefault,
       includeGlobs: input.includeGlobs === undefined ? cloneStringList(previous.includeGlobs) : cloneStringList(input.includeGlobs),
       excludeGlobs: input.excludeGlobs === undefined ? cloneStringList(previous.excludeGlobs) : cloneStringList(input.excludeGlobs),
@@ -106,7 +116,7 @@ export class WorkspaceConnectionsStore {
 
     this.state.connections[index] = updated;
     this.persist();
-    return { ...updated };
+    return cloneConnection(updated);
   }
 
   deleteConnection(connectionId: string): void {
@@ -164,16 +174,24 @@ function normalizeConnectionsState(
 ): PersistedConnectionsState {
   const deduped = new Map<string, WorkspaceConnection>();
   connections.forEach((connection) => {
+    const notesRoot = getWorkspaceConnectionNotesRoot(connection);
     deduped.set(connection.id, {
       ...connection,
+      rootPath: notesRoot,
+      notesRoot,
+      codeRoot: cloneOptionalString(connection.codeRoot),
       includeGlobs: cloneStringList(connection.includeGlobs),
       excludeGlobs: cloneStringList(connection.excludeGlobs),
       isDefault: connection.id === defaultConnection.id ? true : connection.isDefault === true,
     });
   });
 
+  const defaultNotesRoot = getWorkspaceConnectionNotesRoot(defaultConnection);
   deduped.set(defaultConnection.id, {
     ...defaultConnection,
+    rootPath: defaultNotesRoot,
+    notesRoot: defaultNotesRoot,
+    codeRoot: cloneOptionalString(defaultConnection.codeRoot),
     isDefault: true,
     includeGlobs: cloneStringList(defaultConnection.includeGlobs),
     excludeGlobs: cloneStringList(defaultConnection.excludeGlobs),
@@ -185,8 +203,19 @@ function normalizeConnectionsState(
   return {
     connections: normalized.map((connection) => ({
       ...connection,
+      notesRoot: getWorkspaceConnectionNotesRoot(connection),
       isDefault: connection.id === activeDefault,
     })),
+  };
+}
+
+function cloneConnection(connection: WorkspaceConnection): WorkspaceConnection {
+  return {
+    ...connection,
+    codeRoot: cloneOptionalString(connection.codeRoot),
+    notesRoot: cloneOptionalString(connection.notesRoot) ?? getWorkspaceConnectionNotesRoot(connection),
+    includeGlobs: cloneStringList(connection.includeGlobs),
+    excludeGlobs: cloneStringList(connection.excludeGlobs),
   };
 }
 
@@ -200,12 +229,49 @@ function cloneStringList(values: string[] | undefined): string[] | undefined {
     .filter((value, index, items) => value.length > 0 && items.indexOf(value) === index);
 }
 
+function cloneOptionalString(value: string | undefined): string | undefined {
+  return value?.trim() ? value.trim() : undefined;
+}
+
 function readRequiredTrimmedString(value: unknown, key: string): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new Error(`${key} is required`);
   }
 
   return value.trim();
+}
+
+function readOptionalTrimmedString(value: unknown, key: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return readRequiredTrimmedString(value, key);
+}
+
+function resolveConnectionRoots(
+  input: Pick<CreateWorkspaceConnectionInput, "rootPath" | "notesRoot" | "codeRoot">
+    | Pick<UpdateWorkspaceConnectionInput, "rootPath" | "notesRoot" | "codeRoot">,
+  previous?: WorkspaceConnection
+): { notesRoot: string; codeRoot?: string } {
+  const codeRoot = input.codeRoot === undefined
+    ? cloneOptionalString(previous?.codeRoot)
+    : readOptionalTrimmedString(input.codeRoot, "codeRoot");
+  const explicitNotesRoot = input.notesRoot !== undefined
+    ? readOptionalTrimmedString(input.notesRoot, "notesRoot")
+    : input.rootPath !== undefined
+      ? readOptionalTrimmedString(input.rootPath, "rootPath")
+      : cloneOptionalString(previous?.notesRoot) ?? cloneOptionalString(previous?.rootPath);
+  const notesRoot = explicitNotesRoot ?? getWorkspaceConnectionNotesRoot({
+    rootPath: cloneOptionalString(previous?.rootPath),
+    notesRoot: cloneOptionalString(previous?.notesRoot),
+    codeRoot,
+  });
+
+  return {
+    notesRoot,
+    codeRoot,
+  };
 }
 
 function normalizeConnectionId(value: string): string {
@@ -221,14 +287,62 @@ function normalizeConnectionId(value: string): string {
   return normalized;
 }
 
+function validateConnectionRoots(roots: { notesRoot: string; codeRoot?: string }): void {
+  validateConnectionPath(roots.notesRoot, "notesRoot");
+  if (roots.codeRoot) {
+    validateConnectionPath(roots.codeRoot, "codeRoot");
+  }
+}
+
+function validateConnectionPath(targetPath: string, key: string): void {
+  try {
+    const stats = statSync(targetPath);
+    if (!stats.isDirectory()) {
+      throw new Error(`${key} must point to a directory`);
+    }
+    return;
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") {
+      if (error instanceof Error && error.message === `${key} must point to a directory`) {
+        throw error;
+      }
+      throw error;
+    }
+  }
+
+  const parentPath = path.dirname(targetPath);
+  try {
+    const parentStats = statSync(parentPath);
+    if (!parentStats.isDirectory()) {
+      throw new Error(`${key} parent path is not a directory`);
+    }
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      throw new Error(`${key} parent directory does not exist: ${parentPath}`);
+    }
+
+    if (error instanceof Error) {
+      throw error;
+    }
+
+    throw new Error(`${key} is invalid`);
+  }
+}
+
 function isWorkspaceConnection(value: unknown): value is WorkspaceConnection {
   if (!value || typeof value !== "object") {
     return false;
   }
 
   const candidate = value as Partial<WorkspaceConnection>;
+  const hasAnyRoot = [candidate.rootPath, candidate.notesRoot, candidate.codeRoot]
+    .some((item) => typeof item === "string" && item.trim().length > 0);
   return typeof candidate.id === "string"
     && typeof candidate.name === "string"
     && typeof candidate.kind === "string"
-    && typeof candidate.rootPath === "string";
+    && hasAnyRoot;
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === "object" && error !== null && "code" in error;
 }

@@ -15,6 +15,42 @@ interface SeedNote {
   content: string;
 }
 
+interface MarkdownVaultFileSystem {
+  access(path: string): Promise<void>;
+  mkdir(path: string, options?: { recursive?: boolean }): Promise<string | undefined>;
+  readFile(path: string, encoding: BufferEncoding): Promise<string>;
+  readdir(path: string, options?: { withFileTypes?: false }): Promise<string[]>;
+  readdir(path: string, options: { withFileTypes: true }): Promise<import("node:fs").Dirent[]>;
+  rename(oldPath: string, newPath: string): Promise<void>;
+  rmdir(path: string): Promise<void>;
+  stat(path: string): Promise<import("node:fs").Stats>;
+  unlink(path: string): Promise<void>;
+  writeFile(path: string, data: string, encoding: BufferEncoding): Promise<void>;
+}
+
+export interface MarkdownVaultOptions {
+  includeGlobs?: string[];
+  excludeGlobs?: string[];
+}
+
+type MarkdownVaultConstructorOptions =
+  | MarkdownVaultFileSystem
+  | MarkdownVaultOptions;
+
+const DEFAULT_EXCLUDE_GLOBS = [
+  "**/.git/**",
+  "**/.hg/**",
+  "**/.svn/**",
+  "**/node_modules/**",
+  "**/__pycache__/**",
+  "**/.mypy_cache/**",
+  "**/.pytest_cache/**",
+  "**/.ruff_cache/**",
+  "**/.venv/**",
+  "**/venv/**",
+  "**/.obsidian-lite/**",
+];
+
 export class MarkdownVaultError extends Error {
   constructor(
     public readonly statusCode: number,
@@ -50,10 +86,26 @@ export const DEFAULT_SEED_NOTES: SeedNote[] = [
 ];
 
 export class MarkdownVault {
-  constructor(private readonly vaultDir: string) {}
+  private readonly fileSystem: MarkdownVaultFileSystem;
+  private readonly options: MarkdownVaultOptions;
+
+  constructor(
+    private readonly vaultDir: string,
+    fileSystemOrOptions: MarkdownVaultConstructorOptions = fs,
+    options: MarkdownVaultOptions = {}
+  ) {
+    if (isMarkdownVaultFileSystem(fileSystemOrOptions)) {
+      this.fileSystem = fileSystemOrOptions;
+      this.options = normalizeVaultOptions(options);
+      return;
+    }
+
+    this.fileSystem = fs;
+    this.options = normalizeVaultOptions(fileSystemOrOptions);
+  }
 
   async ensureSeeded(seedNotes: SeedNote[] = DEFAULT_SEED_NOTES): Promise<void> {
-    await fs.mkdir(this.vaultDir, { recursive: true });
+    await this.fileSystem.mkdir(this.vaultDir, { recursive: true });
 
     const notes = await this.listNotes();
     if (notes.length > 0) {
@@ -105,17 +157,21 @@ export class MarkdownVault {
     const targetNoteId = joinRelativePath(folderPath, targetFileName);
     const targetPath = this.resolveNotePath(targetNoteId);
 
-    if (targetNoteId !== noteId) {
-      await fs.mkdir(path.dirname(targetPath), { recursive: true });
-      await fs.rename(sourcePath, targetPath);
+    if (targetNoteId === noteId) {
+      await this.writeFileAtomically(targetPath, content);
+      return this.readNote(targetNoteId);
     }
 
-    await this.writeFileAtomically(targetPath, content);
+    await this.moveNoteAtomically(sourcePath, targetPath, content);
     return this.readNote(targetNoteId);
   }
 
   async deleteNote(noteId: string): Promise<void> {
-    await fs.unlink(this.resolveNotePath(noteId));
+    try {
+      await this.fileSystem.unlink(this.resolveNotePath(noteId));
+    } catch (error) {
+      throw normalizeNoteError(error);
+    }
   }
 
   async createFolder(payload: CreateFolderInput): Promise<VaultFolder> {
@@ -124,7 +180,7 @@ export class MarkdownVault {
       throw new MarkdownVaultError(400, "Folder path is required");
     }
 
-    await fs.mkdir(this.resolveFolderPath(folderPath), { recursive: true });
+    await this.fileSystem.mkdir(this.resolveFolderPath(folderPath), { recursive: true });
     return folderFromPath(folderPath);
   }
 
@@ -155,8 +211,8 @@ export class MarkdownVault {
       throw new MarkdownVaultError(409, "A folder with this path already exists");
     }
 
-    await fs.mkdir(path.dirname(targetDirectory), { recursive: true });
-    await fs.rename(sourceDirectory, targetDirectory);
+    await this.fileSystem.mkdir(path.dirname(targetDirectory), { recursive: true });
+    await this.fileSystem.rename(sourceDirectory, targetDirectory);
     return folderFromPath(targetFolderPath);
   }
 
@@ -169,20 +225,27 @@ export class MarkdownVault {
     const directory = this.resolveFolderPath(normalizedFolderPath);
     await this.ensureFolderExists(directory);
 
-    const entries = await fs.readdir(directory);
+    const entries = await this.fileSystem.readdir(directory);
     if (entries.length > 0) {
       throw new MarkdownVaultError(409, "Folder is not empty");
     }
 
-    await fs.rmdir(directory);
+    await this.fileSystem.rmdir(directory);
   }
 
   private async readNote(noteId: string): Promise<VaultNote> {
     const filePath = this.resolveNotePath(noteId);
-    const [content, stats] = await Promise.all([
-      fs.readFile(filePath, "utf8"),
-      fs.stat(filePath),
-    ]);
+    let content: string;
+    let stats: import("node:fs").Stats;
+
+    try {
+      [content, stats] = await Promise.all([
+        this.fileSystem.readFile(filePath, "utf8"),
+        this.fileSystem.stat(filePath),
+      ]);
+    } catch (error) {
+      throw normalizeNoteError(error);
+    }
 
     return {
       id: noteId,
@@ -284,27 +347,27 @@ export class MarkdownVault {
 
   private async writeFileAtomically(filePath: string, content: string): Promise<void> {
     const directory = path.dirname(filePath);
-    const temporaryFileName = `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`;
-    const temporaryPath = path.join(directory, temporaryFileName);
-
-    await fs.mkdir(directory, { recursive: true });
-    await fs.writeFile(temporaryPath, content, "utf8");
-    await fs.rename(temporaryPath, filePath);
+    const temporaryPath = await this.writeTemporaryFile(directory, path.basename(filePath), content);
+    await this.fileSystem.rename(temporaryPath, filePath);
   }
 
   private async walkMarkdownFiles(relativeDirectory = ""): Promise<string[]> {
     const directory = this.resolveFolderPath(relativeDirectory);
-    const entries = await fs.readdir(directory, { withFileTypes: true });
+    const entries = await this.readDirectoryEntries(directory);
     const files: string[] = [];
 
     for (const entry of entries) {
       const relativePath = joinRelativePath(relativeDirectory, entry.name);
+      if (this.isExcluded(relativePath, entry.isDirectory())) {
+        continue;
+      }
+
       if (entry.isDirectory()) {
         files.push(...await this.walkMarkdownFiles(relativePath));
         continue;
       }
 
-      if (entry.isFile() && entry.name.endsWith(".md")) {
+      if (entry.isFile() && entry.name.endsWith(".md") && this.isIncluded(relativePath)) {
         files.push(relativePath);
       }
     }
@@ -314,7 +377,7 @@ export class MarkdownVault {
 
   private async walkFolders(relativeDirectory = ""): Promise<VaultFolder[]> {
     const directory = this.resolveFolderPath(relativeDirectory);
-    const entries = await fs.readdir(directory, { withFileTypes: true });
+    const entries = await this.readDirectoryEntries(directory);
     const folders: VaultFolder[] = [];
 
     for (const entry of entries) {
@@ -323,6 +386,10 @@ export class MarkdownVault {
       }
 
       const folderPath = joinRelativePath(relativeDirectory, entry.name);
+      if (this.isExcluded(folderPath, true)) {
+        continue;
+      }
+
       folders.push(folderFromPath(folderPath));
       folders.push(...await this.walkFolders(folderPath));
     }
@@ -334,9 +401,16 @@ export class MarkdownVault {
     const directory = this.resolveFolderPath(folderPath);
 
     try {
-      const entries = await fs.readdir(directory, { withFileTypes: true });
+      const entries = await this.fileSystem.readdir(directory, { withFileTypes: true });
       return entries
-        .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+        .filter((entry) => {
+          if (!entry.isFile() || !entry.name.endsWith(".md")) {
+            return false;
+          }
+
+          const relativePath = joinRelativePath(folderPath, entry.name);
+          return !this.isExcluded(relativePath, false) && this.isIncluded(relativePath);
+        })
         .map((entry) => entry.name);
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") {
@@ -349,7 +423,7 @@ export class MarkdownVault {
 
   private async ensureFolderExists(directory: string): Promise<void> {
     try {
-      const stats = await fs.stat(directory);
+      const stats = await this.fileSystem.stat(directory);
       if (!stats.isDirectory()) {
         throw new MarkdownVaultError(404, "Folder not found");
       }
@@ -360,6 +434,98 @@ export class MarkdownVault {
 
       throw error;
     }
+  }
+
+  private async moveNoteAtomically(
+    sourcePath: string,
+    targetPath: string,
+    content: string
+  ): Promise<void> {
+    const targetDirectory = path.dirname(targetPath);
+    const targetFileName = path.basename(targetPath);
+    await this.fileSystem.mkdir(targetDirectory, { recursive: true });
+
+    const temporaryTargetPath = await this.writeTemporaryFile(targetDirectory, targetFileName, content);
+    const backupPath = createTemporaryPath(path.dirname(sourcePath), path.basename(sourcePath), "rename-backup");
+
+    try {
+      await this.fileSystem.rename(sourcePath, backupPath);
+    } catch (error) {
+      await this.cleanupTemporaryFile(temporaryTargetPath);
+      throw normalizeNoteError(error);
+    }
+
+    try {
+      await this.fileSystem.rename(temporaryTargetPath, targetPath);
+    } catch (error) {
+      await this.rollbackSourceRename(backupPath, sourcePath);
+      await this.cleanupTemporaryFile(temporaryTargetPath);
+      throw normalizeNoteError(error);
+    }
+
+    await this.cleanupTemporaryFile(backupPath);
+  }
+
+  private async writeTemporaryFile(
+    directory: string,
+    fileName: string,
+    content: string
+  ): Promise<string> {
+    const temporaryPath = createTemporaryPath(directory, fileName, "tmp");
+    await this.fileSystem.mkdir(directory, { recursive: true });
+    await this.fileSystem.writeFile(temporaryPath, content, "utf8");
+    return temporaryPath;
+  }
+
+  private async cleanupTemporaryFile(filePath: string): Promise<void> {
+    try {
+      await this.fileSystem.unlink(filePath);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+    }
+  }
+
+  private async rollbackSourceRename(backupPath: string, sourcePath: string): Promise<void> {
+    try {
+      await this.fileSystem.rename(backupPath, sourcePath);
+    } catch {
+      // Best effort rollback. Preserve the original write error as the user-facing cause.
+    }
+  }
+
+  private async readDirectoryEntries(directory: string): Promise<import("node:fs").Dirent[]> {
+    try {
+      return await this.fileSystem.readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return [];
+      }
+
+      throw error;
+    }
+  }
+
+  private isIncluded(relativePath: string): boolean {
+    if (!this.options.includeGlobs || this.options.includeGlobs.length === 0) {
+      return true;
+    }
+
+    return this.options.includeGlobs.some((pattern) => matchesGlob(relativePath, pattern));
+  }
+
+  private isExcluded(relativePath: string, isDirectory: boolean): boolean {
+    const excludeGlobs = this.options.excludeGlobs;
+    if (!excludeGlobs || excludeGlobs.length === 0) {
+      return false;
+    }
+
+    const normalizedPath = normalizeGlobPath(relativePath);
+    const pathWithDirectoryMarker = isDirectory ? `${normalizedPath}/.dir` : normalizedPath;
+    return excludeGlobs.some((pattern) =>
+      matchesGlob(pathWithDirectoryMarker, pattern) || matchesGlob(normalizedPath, pattern)
+    );
   }
 }
 
@@ -417,6 +583,86 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === "object" && error !== null && "code" in error;
 }
 
+function isMarkdownVaultFileSystem(value: MarkdownVaultConstructorOptions): value is MarkdownVaultFileSystem {
+  return typeof value === "object"
+    && value !== null
+    && "readdir" in value
+    && typeof value.readdir === "function";
+}
+
+function normalizeVaultOptions(options: MarkdownVaultOptions): MarkdownVaultOptions {
+  return {
+    includeGlobs: normalizeGlobList(options.includeGlobs),
+    excludeGlobs: normalizeGlobList([
+      ...DEFAULT_EXCLUDE_GLOBS,
+      ...(options.excludeGlobs ?? []),
+    ]),
+  };
+}
+
+function normalizeGlobList(values: string[] | undefined): string[] | undefined {
+  if (!values || values.length === 0) {
+    return undefined;
+  }
+
+  const normalized = values
+    .map((value) => value.trim())
+    .filter((value, index, items) => value.length > 0 && items.indexOf(value) === index);
+
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeGlobPath(value: string): string {
+  return value.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+}
+
+function matchesGlob(targetPath: string, pattern: string): boolean {
+  const normalizedTarget = normalizeGlobPath(targetPath);
+  const normalizedPattern = normalizeGlobPath(pattern);
+  const regex = globToRegExp(normalizedPattern);
+  return regex.test(normalizedTarget);
+}
+
+function globToRegExp(pattern: string): RegExp {
+  let source = "^";
+
+  for (let index = 0; index < pattern.length; index += 1) {
+    const current = pattern[index];
+    const next = pattern[index + 1];
+
+    if (current === "*") {
+      if (next === "*") {
+        const nextNext = pattern[index + 2];
+        if (nextNext === "/") {
+          source += "(?:.*/)?";
+          index += 2;
+        } else {
+          source += ".*";
+          index += 1;
+        }
+        continue;
+      }
+
+      source += "[^/]*";
+      continue;
+    }
+
+    if (current === "?") {
+      source += "[^/]";
+      continue;
+    }
+
+    source += escapeRegExp(current);
+  }
+
+  source += "$";
+  return new RegExp(source);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
+}
+
 async function pathExists(targetPath: string): Promise<boolean> {
   try {
     await fs.access(targetPath);
@@ -428,4 +674,19 @@ async function pathExists(targetPath: string): Promise<boolean> {
 
     throw error;
   }
+}
+
+function createTemporaryPath(directory: string, fileName: string, suffix: string): string {
+  return path.join(
+    directory,
+    `.${fileName}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.${suffix}`
+  );
+}
+
+function normalizeNoteError(error: unknown): Error {
+  if (isNodeError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")) {
+    return new MarkdownVaultError(404, "Note not found");
+  }
+
+  return error instanceof Error ? error : new MarkdownVaultError(500, "Internal server error");
 }

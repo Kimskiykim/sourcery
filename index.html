@@ -16,22 +16,49 @@
   </head>
   <body>
     <div class="app-shell" id="app-shell">
-      <aside class="activity-bar" aria-label="Primary navigation">
+      <aside class="activity-bar" data-i18n-aria-label="activity.primaryNavigation" aria-label="Primary navigation">
         <div class="activity-bar__stack">
-          <button type="button" class="activity-button" data-view="graph" title="Graph">
+          <button type="button" class="activity-button" data-view="graph" data-i18n-title="activity.graph" title="Graph">
             <span class="activity-button__glyph" aria-hidden="true">◎</span>
-            <span class="activity-button__label">Graph</span>
+            <span class="activity-button__label" data-i18n="activity.graph">Graph</span>
+          </button>
+          <button type="button" class="activity-button" data-view="memory" data-i18n-title="activity.memory" title="Memory">
+            <span class="activity-button__glyph" aria-hidden="true">◌</span>
+            <span class="activity-button__label" data-i18n="activity.memory">Memory</span>
+          </button>
+          <button
+            type="button"
+            class="activity-button"
+            id="workspace-connections-button"
+            data-i18n-title="workspace.manage"
+            data-i18n-aria-label="workspace.manage"
+            title="Sources"
+          >
+            <span class="activity-button__glyph" aria-hidden="true">⌁</span>
+            <span class="activity-button__label">Sources</span>
           </button>
         </div>
         <div class="activity-bar__footer">
           <button
             type="button"
             class="activity-button activity-button--utility"
+            id="language-toggle-button"
+            data-i18n-title="app.language.switch"
+            data-i18n-aria-label="app.language.switch"
+            title="Switch language"
+          >
+            <span class="activity-button__glyph" aria-hidden="true">文</span>
+            <span class="activity-button__label">EN</span>
+          </button>
+          <button
+            type="button"
+            class="activity-button activity-button--utility"
             id="toggle-explorer-button"
+            data-i18n-title="activity.collapseExplorer"
             title="Collapse explorer"
           >
             <span class="activity-button__glyph" id="toggle-explorer-glyph" aria-hidden="true">⇤</span>
-            <span class="activity-button__label">Explorer</span>
+            <span class="activity-button__label" data-i18n="activity.explorer">Explorer</span>
           </button>
           <span class="activity-bar__status" aria-hidden="true">●</span>
         </div>
@@ -39,46 +66,59 @@
 
       <aside class="sidebar" id="sidebar">
         <div class="sidebar__header">
-          <div>
-            <p class="eyebrow">Explorer</p>
-            <h1>Vault</h1>
-          </div>
+          <button
+            type="button"
+            class="sidebar__vault-switcher"
+            id="sidebar-vault-switcher"
+            data-i18n-title="workspace.manage"
+            data-i18n-aria-label="workspace.manage"
+            title="Sources"
+            aria-label="Sources"
+          >
+            <img class="sidebar__logo" src="./image.png" alt="Sourcery logo" />
+            <span class="sidebar__vault-switcher-copy">
+              <h1 id="sidebar-vault-title">Vault</h1>
+              <span class="sidebar__vault-switcher-glyph" aria-hidden="true">▾</span>
+            </span>
+          </button>
           <div class="sidebar__header-actions">
-            <button type="button" class="icon-button icon-button--secondary" id="refresh-button" title="Обновить">
+            <button type="button" class="icon-button icon-button--secondary" id="refresh-button" data-i18n-title="sidebar.refresh" title="Обновить">
               ↻
             </button>
-            <button type="button" class="icon-button icon-button--secondary" id="new-folder-button" title="Новая папка">
+            <button type="button" class="icon-button icon-button--secondary" id="new-folder-button" data-i18n-title="sidebar.newFolder" title="Новая папка">
               ▣
             </button>
-            <button type="button" class="icon-button" id="new-note-button" title="Новая заметка">
+            <button type="button" class="icon-button" id="new-note-button" data-i18n-title="sidebar.newNote" title="Новая заметка">
               +
             </button>
           </div>
         </div>
+        <div class="sidebar-vault-menu" id="sidebar-vault-menu" hidden></div>
 
         <label class="search-field">
-          <span>Поиск</span>
+          <span data-i18n="sidebar.search">Поиск</span>
           <input
             type="search"
             id="search-input"
+            data-i18n-placeholder="sidebar.searchPlaceholder"
             placeholder="Заголовок или текст"
             autocomplete="off"
           />
         </label>
         <div class="folders-panel" hidden>
           <div class="notes-panel__header">
-            <span>Папки</span>
+            <span data-i18n="folders.title">Папки</span>
             <span class="notes-panel__count" id="folder-count">0</span>
           </div>
           <div class="folder-visibility-switcher">
-            <button type="button" class="switch-button is-active" id="show-all-folders-button">Show all</button>
-            <button type="button" class="switch-button" id="show-selected-folder-button">Selected only</button>
+            <button type="button" class="switch-button is-active" id="show-all-folders-button" data-i18n="folders.showAll">Show all</button>
+            <button type="button" class="switch-button" id="show-selected-folder-button" data-i18n="folders.showSelectedOnly">Selected only</button>
           </div>
           <div class="folder-selection-bar">
             <span class="folder-selection-bar__path" id="folder-selection-path">Root</span>
             <div class="folder-selection-bar__actions">
-              <button type="button" class="secondary-button" id="rename-folder-button">Rename</button>
-              <button type="button" class="secondary-button" id="delete-folder-button">Delete empty</button>
+              <button type="button" class="secondary-button" id="rename-folder-button" data-i18n="folders.rename">Rename</button>
+              <button type="button" class="secondary-button" id="delete-folder-button" data-i18n="folders.deleteEmpty">Delete empty</button>
             </div>
           </div>
           <ul class="folder-list" id="folder-list"></ul>
@@ -86,7 +126,7 @@
 
         <div class="notes-panel">
           <div class="notes-panel__header">
-            <span>Заметки</span>
+            <span data-i18n="notes.title">Заметки</span>
             <span class="notes-panel__count" id="note-count">0</span>
           </div>
           <ul class="note-list" id="note-list"></ul>
@@ -97,45 +137,62 @@
         type="button"
         class="sidebar-resizer"
         id="sidebar-resizer"
+        data-i18n-aria-label="activity.explorer"
+        data-i18n-title="activity.explorer"
         aria-label="Resize explorer"
         title="Resize explorer"
       ></button>
 
       <main class="workspace">
         <header class="workspace__appbar">
-          <div class="workspace__titleblock">
-            <div class="workspace__brand">
-              <img class="workspace__logo" src="./image.png" alt="Sourcery logo" />
-              <div class="workspace__brand-copy">
-                <p class="eyebrow">Knowledge Workspace</p>
-                <strong class="workspace__title">Sourcery</strong>
-              </div>
-            </div>
-          </div>
           <div class="toolbar__meta">
             <span class="status-pill" id="save-state">Markdown vault</span>
-            <span class="status-text" id="note-meta">0 слов</span>
+            <span class="status-text" id="note-meta">0</span>
           </div>
         </header>
 
-        <nav class="workspace__tabs" aria-label="Workspace tabs">
-          <div class="workspace-tabs__rail" id="workspace-tab-list">
-            <div class="workspace-tabs__empty">
-              <span>No tabs yet</span>
-              <span>Open the current note to keep it in the workspace strip.</span>
+        <nav class="workspace__tabs" data-i18n-aria-label="workspace.tabs" aria-label="Workspace tabs">
+          <div class="workspace-tabs__rail">
+            <div class="workspace-tabs__list" id="workspace-tab-list">
+              <div class="workspace-tabs__empty">
+                <span data-i18n="workspace.emptyTabsTitle">No tabs yet</span>
+                <span data-i18n="workspace.emptyTabsCopy">Open the current note to keep it in the workspace strip.</span>
+              </div>
             </div>
+            <button
+              type="button"
+              class="secondary-button workspace-tabs__open-button"
+              id="workspace-new-tab-button"
+              data-i18n-title="workspace.newTab"
+              data-i18n-aria-label="workspace.newTab"
+              title="New tab"
+              aria-label="New tab"
+            >
+              +
+            </button>
           </div>
           <div class="workspace-tabs__controls">
+            <button
+              type="button"
+              class="secondary-button workspace-tabs__history-button"
+              id="workspace-back-button"
+              data-i18n-title="workspace.back"
+              data-i18n-aria-label="workspace.back"
+              title="Back"
+              aria-label="Back"
+            >
+              ←
+            </button>
             <div class="workspace-tabs__active-state" id="workspace-active-tab-state">No active note</div>
             <span class="workspace-tabs__view-badge" id="workspace-view-badge">Split</span>
-            <div class="workspace-view-switcher" aria-label="Workspace view">
-              <button type="button" class="workspace-view-button" data-view="split" title="Workspace">
+            <div class="workspace-view-switcher" data-i18n-aria-label="workspace.view" aria-label="Workspace view">
+              <button type="button" class="workspace-view-button" data-view="split" data-i18n-title="view.split" title="Workspace">
                 <span class="workspace-view-button__glyph" aria-hidden="true">◫</span>
               </button>
-              <button type="button" class="workspace-view-button" data-view="editor" title="Editor">
+              <button type="button" class="workspace-view-button" data-view="editor" data-i18n-title="view.editor" title="Editor">
                 <span class="workspace-view-button__glyph" aria-hidden="true">✎</span>
               </button>
-              <button type="button" class="workspace-view-button" data-view="preview" title="Preview">
+              <button type="button" class="workspace-view-button" data-view="preview" data-i18n-title="view.preview" title="Preview">
                 <span class="workspace-view-button__glyph" aria-hidden="true">≣</span>
               </button>
             </div>
@@ -150,32 +207,35 @@
                   class="title-input"
                   id="note-title"
                   type="text"
+                  data-i18n-placeholder="note.titlePlaceholder"
                   placeholder="Название заметки"
                   autocomplete="off"
                 />
                 <p class="title-hint" id="title-hint" hidden></p>
                 <div class="note-meta-row">
                   <span class="note-path-badge" id="note-path-badge">Root</span>
-                  <button type="button" class="secondary-button note-move-button" id="note-move-button">Move</button>
+                  <button type="button" class="secondary-button note-move-button" id="note-move-button" data-i18n="note.move">Move</button>
                 </div>
                 <select class="note-folder-select" id="note-folder-select" hidden></select>
                 <div class="note-tags" id="note-tags" hidden></div>
               </div>
-              <button type="button" class="danger-button" id="delete-button">Удалить</button>
+              <button type="button" class="danger-button" id="delete-button" data-i18n="note.delete">Удалить</button>
             </div>
             <textarea
               id="note-editor"
               class="editor-textarea"
+              data-i18n-placeholder="note.editorPlaceholder"
               placeholder="# Начните писать..."
               spellcheck="false"
             ></textarea>
+            <div class="wikilink-suggestions" id="wikilink-suggestions" hidden></div>
           </article>
 
           <article class="pane pane--preview" id="preview-pane">
             <div class="pane__header pane__header--preview">
               <div class="note-context" id="note-context" hidden>
                 <div class="context-group">
-                  <p class="context-label">Backlinks</p>
+                  <p class="context-label" data-i18n="note.backlinks">Backlinks</p>
                   <div class="context-links" id="note-backlinks"></div>
                 </div>
               </div>
@@ -185,27 +245,23 @@
 
           <article class="pane pane--graph" id="graph-pane">
             <div class="pane__header pane__header--graph">
-              <div>
-                <p class="eyebrow">Knowledge Graph</p>
-                <h2>Graph View</h2>
-              </div>
               <div class="graph-toolbar">
                 <div class="graph-toolbar__group">
-                  <button type="button" class="switch-button is-active" id="graph-global-button">Global</button>
-                  <button type="button" class="switch-button" id="graph-local-button">Local</button>
-                </div>
-                <div class="graph-toolbar__group">
-                  <label class="graph-color-field">
-                    <span>Color</span>
-                    <select id="graph-color-mode">
-                      <option value="none">None</option>
-                      <option value="folder">Folder</option>
-                      <option value="tag">Tag</option>
-                      <option value="cluster">Cluster</option>
-                    </select>
-                  </label>
-                  <button type="button" class="switch-button" id="graph-folder-scope-button">Scope folder</button>
-                  <button type="button" class="switch-button" id="graph-existing-only-button">Existing only</button>
+                  <button type="button" class="secondary-button graph-toolbar-button is-active" id="graph-global-button" title="Global" aria-label="Global">
+                    <span class="graph-toolbar-button__glyph" aria-hidden="true">◉</span>
+                  </button>
+                  <button type="button" class="secondary-button graph-toolbar-button" id="graph-local-button" title="Local" aria-label="Local">
+                    <span class="graph-toolbar-button__glyph" aria-hidden="true">◎</span>
+                  </button>
+                  <button type="button" class="secondary-button graph-toolbar-button" id="graph-color-mode-button" title="Color" aria-label="Color">
+                    <span class="graph-toolbar-button__glyph" aria-hidden="true">◌</span>
+                  </button>
+                  <button type="button" class="secondary-button graph-toolbar-button" id="graph-folder-scope-button" title="Scope folder" aria-label="Scope folder">
+                    <span class="graph-toolbar-button__glyph" aria-hidden="true">⊡</span>
+                  </button>
+                  <button type="button" class="secondary-button graph-toolbar-button" id="graph-existing-only-button" title="Existing only" aria-label="Existing only">
+                    <span class="graph-toolbar-button__glyph" aria-hidden="true">✓</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -216,9 +272,37 @@
                 <div class="graph-legend" id="graph-legend"></div>
                 <div class="graph-canvas-wrap">
                   <div class="graph-canvas-controls">
-                    <button type="button" class="switch-button" id="graph-center-view-button">Center</button>
-                    <button type="button" class="switch-button" id="graph-reset-view-button">Reset view</button>
-                    <button type="button" class="switch-button" id="graph-toggle-sidebar-button">Hide panel</button>
+                    <button
+                      type="button"
+                      class="secondary-button graph-action-button"
+                      id="graph-center-view-button"
+                      data-i18n-title="graph.center"
+                      data-i18n-aria-label="graph.center"
+                      title="Center"
+                      aria-label="Center"
+                    >
+                      <span class="graph-action-button__glyph" aria-hidden="true">⊙</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="secondary-button graph-action-button"
+                      id="graph-reset-view-button"
+                      data-i18n-title="graph.resetView"
+                      data-i18n-aria-label="graph.resetView"
+                      title="Reset view"
+                      aria-label="Reset view"
+                    >
+                      <span class="graph-action-button__glyph" aria-hidden="true">↺</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="secondary-button graph-action-button"
+                      id="graph-toggle-sidebar-button"
+                      title="Hide panel"
+                      aria-label="Hide panel"
+                    >
+                      <span class="graph-action-button__glyph" aria-hidden="true">◂</span>
+                    </button>
                   </div>
                   <svg class="graph-canvas" id="graph-canvas" viewBox="0 0 1000 680" preserveAspectRatio="xMidYMid meet"></svg>
                   <div class="graph-empty-state" id="graph-empty-state" hidden></div>
@@ -228,21 +312,21 @@
               <aside class="graph-insights">
                 <section class="graph-insight-card">
                   <div class="notes-panel__header">
-                    <span>Path finder</span>
+                    <span data-i18n="graph.pathFinder">Path finder</span>
                   </div>
                   <div class="graph-path-form">
                     <label class="graph-path-field">
-                      <span>From</span>
+                      <span data-i18n="common.from">From</span>
                       <select id="graph-path-from"></select>
                     </label>
                     <label class="graph-path-field">
-                      <span>To</span>
+                      <span data-i18n="common.to">To</span>
                       <select id="graph-path-to"></select>
                     </label>
                     <div class="graph-path-actions">
-                      <button type="button" class="secondary-button" id="graph-path-current-button">Current</button>
-                      <button type="button" class="secondary-button" id="graph-path-swap-button">Swap</button>
-                      <button type="button" class="secondary-button" id="graph-path-find-button">Find path</button>
+                      <button type="button" class="secondary-button" id="graph-path-current-button" data-i18n="common.current">Current</button>
+                      <button type="button" class="secondary-button" id="graph-path-swap-button" data-i18n="common.swap">Swap</button>
+                      <button type="button" class="secondary-button" id="graph-path-find-button" data-i18n="common.findPath">Find path</button>
                     </div>
                   </div>
                   <div class="graph-insight-list" id="graph-path-result"></div>
@@ -250,41 +334,102 @@
 
                 <section class="graph-insight-card">
                   <div class="notes-panel__header">
-                    <span>Top linked</span>
+                    <span data-i18n="graph.topLinked">Top linked</span>
                   </div>
                   <div class="graph-insight-list" id="graph-top-linked"></div>
                 </section>
 
                 <section class="graph-insight-card">
                   <div class="notes-panel__header">
-                    <span>Hubs</span>
+                    <span data-i18n="graph.hubs">Hubs</span>
                   </div>
                   <div class="graph-insight-list" id="graph-hubs"></div>
                 </section>
 
                 <section class="graph-insight-card">
                   <div class="notes-panel__header">
-                    <span>Bridges</span>
+                    <span data-i18n="graph.bridges">Bridges</span>
                   </div>
                   <div class="graph-insight-list" id="graph-bridges"></div>
                 </section>
 
                 <section class="graph-insight-card">
                   <div class="notes-panel__header">
-                    <span>Broken links</span>
+                    <span data-i18n="graph.brokenLinks">Broken links</span>
                   </div>
                   <div class="graph-insight-list" id="graph-broken-links"></div>
                 </section>
 
                 <section class="graph-insight-card">
                   <div class="notes-panel__header">
-                    <span>Orphans</span>
+                    <span data-i18n="graph.orphans">Orphans</span>
                   </div>
                   <div class="graph-insight-list" id="graph-orphans"></div>
                 </section>
               </aside>
             </div>
           </article>
+        </section>
+
+        <section class="memory-layout" id="memory-layout" hidden>
+          <header class="memory-layout__header">
+            <div>
+              <p class="eyebrow" data-i18n="memory.titleEyebrow">App Memory</p>
+              <h2 data-i18n="memory.title">Persistent memory outside connected vaults</h2>
+              <p class="memory-layout__copy" data-i18n="memory.copy">
+                Global memory stays with Sourcery. Workspace memory follows the active connection and is not mixed into graph, backlinks, or vault search.
+              </p>
+            </div>
+            <button type="button" class="secondary-button" id="memory-reload-all-button" data-i18n="memory.reloadAll">Reload memory</button>
+          </header>
+
+          <div class="memory-layout__grid">
+            <article class="memory-card">
+              <header class="memory-card__header">
+                <div>
+                  <p class="memory-card__eyebrow" data-i18n="memory.global">Global</p>
+                  <h3 data-i18n="memory.globalTitle">Shared app memory</h3>
+                  <p class="memory-card__meta" id="memory-global-updated">Not saved yet</p>
+                </div>
+                <div class="memory-card__actions">
+                  <span class="memory-card__state" id="memory-global-state">Empty</span>
+                  <button type="button" class="secondary-button" id="memory-global-reload-button" data-i18n="common.reload">Reload</button>
+                  <button type="button" class="secondary-button" id="memory-global-save-button" data-i18n="common.save">Save</button>
+                  <button type="button" class="danger-button" id="memory-global-clear-button" data-i18n="common.clear">Clear</button>
+                </div>
+              </header>
+              <textarea
+                id="memory-global-editor"
+                class="memory-editor"
+                data-i18n-placeholder="memory.globalPlaceholder"
+                placeholder="User preferences, writing style, default rules, and long-lived context."
+                spellcheck="false"
+              ></textarea>
+            </article>
+
+            <article class="memory-card">
+              <header class="memory-card__header">
+                <div>
+                  <p class="memory-card__eyebrow" data-i18n="memory.workspace">Workspace</p>
+                  <h3 id="memory-workspace-connection">No active workspace</h3>
+                  <p class="memory-card__meta" id="memory-workspace-updated">Not saved yet</p>
+                </div>
+                <div class="memory-card__actions">
+                  <span class="memory-card__state" id="memory-workspace-state">Empty</span>
+                  <button type="button" class="secondary-button" id="memory-workspace-reload-button" data-i18n="common.reload">Reload</button>
+                  <button type="button" class="secondary-button" id="memory-workspace-save-button" data-i18n="common.save">Save</button>
+                  <button type="button" class="danger-button" id="memory-workspace-clear-button" data-i18n="common.clear">Clear</button>
+                </div>
+              </header>
+              <textarea
+                id="memory-workspace-editor"
+                class="memory-editor"
+                data-i18n-placeholder="memory.workspacePlaceholder"
+                placeholder="Project conventions, recurring decisions, local workflows, and context that should live outside the connected notes root."
+                spellcheck="false"
+              ></textarea>
+            </article>
+          </div>
         </section>
       </main>
     </div>
@@ -294,11 +439,183 @@
 
     <template id="empty-note-template">
       <div class="empty-state">
-        <p class="empty-state__eyebrow">Vault пуст</p>
-        <h2>Создайте первую заметку</h2>
-        <p>Новая заметка будет сохранена как отдельный markdown-файл в папке vault.</p>
+        <p class="empty-state__eyebrow" data-i18n="emptyVault.eyebrow">Vault пуст</p>
+        <h2 data-i18n="emptyVault.title">Создайте первую заметку</h2>
+        <p data-i18n="emptyVault.copy">Новая заметка будет сохранена как отдельный markdown-файл в папке vault.</p>
       </div>
     </template>
+
+    <div class="connection-manager" id="connection-manager" hidden>
+      <div class="connection-manager__backdrop" id="connection-manager-backdrop"></div>
+      <section
+        class="connection-manager__card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="connection-manager-title"
+        aria-describedby="connection-manager-description"
+      >
+        <header class="connection-manager__header">
+          <div>
+            <p class="connection-manager__eyebrow" data-i18n="connection.titleEyebrow">Workspace Connections</p>
+            <h2 class="connection-manager__title" id="connection-manager-title">Connect workspace</h2>
+            <p class="connection-manager__description" id="connection-manager-description">
+              Add a new workspace connection for notes, docs, or code.
+            </p>
+          </div>
+          <button type="button" class="icon-button icon-button--secondary" id="connection-manager-close" data-i18n-title="connection.close" title="Close">
+            ×
+          </button>
+        </header>
+
+        <div class="connection-manager__layout">
+          <aside class="connection-manager__sidebar">
+            <div class="connection-manager__sidebar-header">
+              <div>
+                <p class="eyebrow" data-i18n="connection.connected">Connected workspaces</p>
+                <strong data-i18n="connection.list">List</strong>
+              </div>
+              <button type="button" class="secondary-button" id="connection-manager-create" data-i18n="connection.new">New</button>
+            </div>
+            <div class="connection-manager__empty" id="connection-manager-empty" hidden>
+              <p class="connection-manager__empty-title" data-i18n="connection.emptyTitle">No connections yet</p>
+              <p class="connection-manager__empty-copy" data-i18n="connection.emptyCopy">Create a connection to attach a vault, repo docs, or docs folder.</p>
+            </div>
+            <div class="connection-manager-list" id="connection-manager-list"></div>
+          </aside>
+
+          <form class="connection-manager-form" id="connection-manager-form">
+            <section class="connection-manager-presets">
+              <div class="connection-manager-presets__header">
+                <p class="eyebrow" data-i18n="connection.quickConnect">Quick connect</p>
+                <strong data-i18n="connection.chooseShape">Choose a workspace shape</strong>
+              </div>
+              <div class="connection-manager-presets__grid">
+                <button type="button" class="connection-manager-preset" data-connection-preset="vault">
+                  <span class="connection-manager-preset__title" data-i18n="connection.connectVault">Connect vault</span>
+                  <span class="connection-manager-preset__copy" data-i18n="connection.connectVaultCopy">Single markdown vault root.</span>
+                </button>
+                <button type="button" class="connection-manager-preset" data-connection-preset="docs_folder">
+                  <span class="connection-manager-preset__title" data-i18n="connection.connectDocsFolder">Connect docs folder</span>
+                  <span class="connection-manager-preset__copy" data-i18n="connection.connectDocsFolderCopy">Standalone docs directory.</span>
+                </button>
+                <button type="button" class="connection-manager-preset" data-connection-preset="repo_docs">
+                  <span class="connection-manager-preset__title" data-i18n="connection.connectRepoDocs">Connect repo docs</span>
+                  <span class="connection-manager-preset__copy" data-i18n="connection.connectRepoDocsCopy">Repository docs subtree as notes root.</span>
+                </button>
+                <button type="button" class="connection-manager-preset" data-connection-preset="code_repo">
+                  <span class="connection-manager-preset__title" data-i18n="connection.connectCodeRepo">Connect code repo</span>
+                  <span class="connection-manager-preset__copy" data-i18n="connection.connectCodeRepoCopy">Separate code root and notes root.</span>
+                </button>
+              </div>
+            </section>
+
+            <div class="connection-manager-form__grid">
+              <label class="connection-manager-field">
+                <span data-i18n="connection.name">Name</span>
+                <input type="text" id="connection-manager-name" autocomplete="off" placeholder="Project docs" />
+              </label>
+
+              <label class="connection-manager-field">
+                <span data-i18n="connection.type">Type</span>
+                <select id="connection-manager-kind">
+                  <option value="vault">vault</option>
+                  <option value="repo_docs">repo_docs</option>
+                  <option value="code_repo">code_repo</option>
+                  <option value="docs_folder">docs_folder</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="connection-manager-form__kind-hint" id="connection-manager-kind-hint">
+              Single markdown vault with one notes root.
+            </div>
+
+            <label class="connection-manager-field" id="connection-manager-root-field">
+              <span id="connection-manager-root-label">Vault root</span>
+              <div class="connection-manager-path-input" data-connection-path-field="rootPath">
+                <input
+                  type="text"
+                  id="connection-manager-root-path"
+                  autocomplete="off"
+                  placeholder="/absolute/path/to/vault"
+                />
+                <div class="connection-manager-path-input__actions">
+                  <button type="button" class="secondary-button" data-connection-path-browse="rootPath" data-i18n="connection.browse">Browse</button>
+                  <button type="button" class="secondary-button" data-connection-path-paste="rootPath" data-i18n="connection.paste">Paste</button>
+                  <button type="button" class="secondary-button" data-connection-path-clear="rootPath" data-i18n="connection.clear">Clear</button>
+                </div>
+              </div>
+              <small id="connection-manager-root-hint">Directory with markdown notes for this workspace.</small>
+            </label>
+
+            <div class="connection-manager-form__grid connection-manager-form__grid--roots">
+              <label class="connection-manager-field" id="connection-manager-code-root-field" hidden>
+                <span data-i18n="connection.codeRoot">Code root</span>
+                <div class="connection-manager-path-input" data-connection-path-field="codeRoot">
+                  <input
+                    type="text"
+                    id="connection-manager-code-root"
+                    autocomplete="off"
+                    placeholder="/absolute/path/to/repo"
+                  />
+                  <div class="connection-manager-path-input__actions">
+                    <button type="button" class="secondary-button" data-connection-path-browse="codeRoot" data-i18n="connection.browse">Browse</button>
+                    <button type="button" class="secondary-button" data-connection-path-paste="codeRoot" data-i18n="connection.paste">Paste</button>
+                    <button type="button" class="secondary-button" data-connection-path-clear="codeRoot" data-i18n="connection.clear">Clear</button>
+                  </div>
+                </div>
+                <small data-i18n="connection.mainRepoRoot">Main repository root for code browsing.</small>
+              </label>
+
+              <label class="connection-manager-field" id="connection-manager-notes-root-field" hidden>
+                <span data-i18n="connection.notesRoot">Notes root</span>
+                <div class="connection-manager-path-input" data-connection-path-field="notesRoot">
+                  <input
+                    type="text"
+                    id="connection-manager-notes-root"
+                    autocomplete="off"
+                    placeholder="/absolute/path/to/repo/docs"
+                  />
+                  <div class="connection-manager-path-input__actions">
+                    <button type="button" class="secondary-button" data-connection-path-browse="notesRoot" data-i18n="connection.browse">Browse</button>
+                    <button type="button" class="secondary-button" data-connection-path-paste="notesRoot" data-i18n="connection.paste">Paste</button>
+                    <button type="button" class="secondary-button" data-connection-path-clear="notesRoot" data-i18n="connection.clear">Clear</button>
+                  </div>
+                </div>
+                <small data-i18n="connection.notesRootHint">Markdown notes or docs root linked to the code repo.</small>
+              </label>
+            </div>
+
+            <p class="connection-manager-form__path-help" data-i18n="connection.pathHelp">
+              Paste an absolute path or drag a folder into a path field. `file://` URLs are supported.
+            </p>
+
+            <label class="connection-manager-toggle">
+              <input type="checkbox" id="connection-manager-default" />
+              <span data-i18n="connection.default">Make this the default workspace connection</span>
+            </label>
+
+            <label class="connection-manager-toggle">
+              <input type="checkbox" id="connection-manager-activate" />
+              <span data-i18n="connection.activate">Switch to this workspace after save</span>
+            </label>
+
+            <p class="connection-manager-form__error" id="connection-manager-error" hidden></p>
+
+            <div class="connection-manager-form__actions">
+              <div class="connection-manager-form__actions-left">
+                <button type="button" class="secondary-button" id="connection-manager-use" data-i18n="connection.useNow">Use now</button>
+                <button type="button" class="danger-button" id="connection-manager-delete" data-i18n="common.delete">Delete</button>
+              </div>
+              <div class="connection-manager-form__actions-right">
+                <button type="button" class="secondary-button" id="connection-manager-reset" data-i18n="connection.reset">Reset</button>
+                <button type="submit" class="icon-button" id="connection-manager-submit">Create connection</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </section>
+    </div>
 
     <div class="confirm-dialog" id="confirm-dialog" hidden>
       <div class="confirm-dialog__backdrop" id="confirm-dialog-backdrop"></div>
@@ -309,14 +626,14 @@
         aria-labelledby="confirm-dialog-title"
         aria-describedby="confirm-dialog-description"
       >
-        <p class="confirm-dialog__eyebrow">Confirmation</p>
+        <p class="confirm-dialog__eyebrow" data-i18n="dialog.confirmation">Confirmation</p>
         <h2 class="confirm-dialog__title" id="confirm-dialog-title">Подтвердите действие</h2>
         <p class="confirm-dialog__description" id="confirm-dialog-description">
           Это действие нельзя отменить.
         </p>
         <div class="confirm-dialog__actions">
-          <button type="button" class="secondary-button" id="confirm-dialog-cancel">Отмена</button>
-          <button type="button" class="danger-button" id="confirm-dialog-confirm">Удалить</button>
+          <button type="button" class="secondary-button" id="confirm-dialog-cancel" data-i18n="common.cancel">Отмена</button>
+          <button type="button" class="danger-button" id="confirm-dialog-confirm" data-i18n="common.delete">Удалить</button>
         </div>
       </div>
     </div>

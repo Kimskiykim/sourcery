@@ -65,3 +65,48 @@ test("getMetadata returns links, backlinks, and tags", () => {
   assert.deepEqual(metadata.backlinks, ["Source.md"]);
   assert.deepEqual(metadata.tags, ["target", "docs"]);
 });
+
+test("ambiguous title links stay unresolved while path-qualified links resolve", () => {
+  const alphaA: WorkspaceNote = {
+    id: "areas/a/Alpha.md",
+    title: "Alpha",
+    folderPath: "areas/a",
+    content: "",
+    createdAt: "2026-04-20T00:00:00.000Z",
+    updatedAt: "2026-04-20T00:00:00.000Z",
+  };
+  const alphaB: WorkspaceNote = {
+    id: "areas/b/Alpha.md",
+    title: "Alpha",
+    folderPath: "areas/b",
+    content: "",
+    createdAt: "2026-04-20T00:00:00.000Z",
+    updatedAt: "2026-04-20T00:00:00.000Z",
+  };
+  const ambiguousSource: WorkspaceNote = {
+    id: "Ambiguous.md",
+    title: "Ambiguous",
+    folderPath: "",
+    content: "See [[Alpha]]",
+    createdAt: "2026-04-20T00:00:00.000Z",
+    updatedAt: "2026-04-20T00:00:00.000Z",
+  };
+  const exactSource: WorkspaceNote = {
+    id: "Exact.md",
+    title: "Exact",
+    folderPath: "",
+    content: "See [[areas/a/Alpha]]",
+    createdAt: "2026-04-20T00:00:00.000Z",
+    updatedAt: "2026-04-20T00:00:00.000Z",
+  };
+
+  const notes = [alphaA, alphaB, ambiguousSource, exactSource];
+  const metadata = wiki.getMetadata(alphaA, notes);
+  const resolvedLinks = wiki.buildResolvedLinks(notes);
+
+  assert.deepEqual(metadata.backlinks, ["Exact.md"]);
+  assert.deepEqual(resolvedLinks["Ambiguous.md"], {});
+  assert.deepEqual(resolvedLinks["Exact.md"], {
+    "areas/a/Alpha.md": 1,
+  });
+});

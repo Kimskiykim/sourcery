@@ -4,8 +4,10 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "mcp": "node dist/mcp.js",
     "test": "npm run build && node --test \"dist/**/*.test.js\"",
     "watch": "tsc --watch",
+    "prestart": "npm run build",
     "start": "node dist/server.js"
   },
   "devDependencies": {

@@ -4,14 +4,30 @@ import {
   type Server as HttpServer,
   type ServerResponse,
 } from "node:http";
+import { execFile } from "node:child_process";
 import { promises as fs, watch, type FSWatcher } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  type AgentAccessPolicy,
+  AgentCreateNoteInput,
+  AgentContextPackInput,
+  AgentGetBacklinksInput,
+  AgentGraphSummaryInput,
+  AgentOpenTabInput,
+  AgentReadNoteInput,
+  AgentSearchNotesInput,
+  AgentUpdateNoteInput,
+} from "./core/agent/types.js";
+import { AgentWorkspaceSDK, AGENT_NOTE_WRITE_DISABLED_ERROR } from "./core/agent/agent-sdk.js";
+import {
   GraphSDK,
   WorkspaceTabsSessionStore,
 } from "./core/graph/graph-sdk.js";
+import { AppMemoryStore } from "./core/memory/app-memory-store.js";
+import type { AppMemoryDocument, UpdateAppMemoryInput } from "./core/memory/types.js";
 import type {
   ActivateWorkspaceTabInput,
   CloseWorkspaceTabInput,
@@ -38,6 +54,7 @@ import type {
 } from "./core/storage/types.js";
 import { WorkspaceConnectionsStore } from "./core/workspace/connections-store.js";
 import { WorkspaceRevisionTracker } from "./core/workspace/revision-tracker.js";
+import { getWorkspaceConnectionNotesRoot } from "./core/workspace/session-types.js";
 import { WorkspaceSDK } from "./core/workspace/workspace-sdk.js";
 import { WikiSDK } from "./core/wiki/wiki-sdk.js";
 
@@ -48,23 +65,28 @@ const defaultDistDir = path.join(defaultRootDir, "dist");
 const defaultVaultDir = path.join(defaultRootDir, "vault");
 const defaultAppStateDir = path.join(defaultRootDir, ".obsidian-lite");
 const defaultPort = Number(process.env.PORT ?? "4173");
+const defaultHost = process.env.HOST?.trim() || "127.0.0.1";
 
 export interface AppContext {
   rootDir: string;
   distDir: string;
   vaultDir: string;
   appStateDir: string;
+  memory: AppMemoryStore;
   workspace: WorkspaceSDK;
   workspaceRevision: WorkspaceRevisionTracker;
   graph: GraphSDK;
   connections: WorkspaceConnectionsStore;
   tabsSession: WorkspaceTabsSessionStore;
+  agentPolicy: AgentAccessPolicy;
   connectionWatcher?: WorkspaceConnectionWatcher;
+  systemDirectoryPicker?: SystemDirectoryPicker;
 }
 
 export interface StartAppServerOptions {
   context?: AppContext;
   port?: number;
+  host?: string;
   watchVault?: boolean;
 }
 
@@ -73,6 +95,19 @@ type WorkspaceConnectionWatcher = {
   refresh: () => void;
   close: () => void;
 };
+
+type PickDirectoryOptions = {
+  title?: string;
+  defaultPath?: string;
+};
+
+type SystemDirectoryPicker = (options: PickDirectoryOptions) => Promise<string | null>;
+
+type WatchFunction = (
+  pathToWatch: string,
+  options: { recursive?: boolean },
+  listener: (eventType: string, fileName: string | Buffer | null) => void
+) => FSWatcher;
 
 export function createAppContext(overrides: Partial<AppContext> = {}): AppContext {
   const rootDir = overrides.rootDir ?? defaultRootDir;
@@ -90,6 +125,7 @@ export function createAppContext(overrides: Partial<AppContext> = {}): AppContex
     distDir,
     vaultDir,
     appStateDir,
+    memory: overrides.memory ?? new AppMemoryStore(path.join(appStateDir, "memory")),
     workspace: overrides.workspace ?? new WorkspaceSDK(
       new MarkdownVault(vaultDir),
       createWorkspaceStorageResolver(connections, defaultConnection.id),
@@ -103,6 +139,8 @@ export function createAppContext(overrides: Partial<AppContext> = {}): AppContex
       defaultConnection: connections.getDefaultConnection(),
       resolveConnection: (connectionId) => connections.getConnection(connectionId) ?? undefined,
     }),
+    agentPolicy: overrides.agentPolicy ?? { allowNoteWrites: false },
+    systemDirectoryPicker: overrides.systemDirectoryPicker ?? createSystemDirectoryPicker(),
   };
 }
 
@@ -123,8 +161,10 @@ export function createAppServer(context = createAppContext()): HttpServer {
   });
 }
 
-function createWorkspaceConnectionWatcher(
-  context: Pick<AppContext, "connections" | "workspaceRevision">
+export function createWorkspaceConnectionWatcher(
+  context: Pick<AppContext, "connections" | "workspaceRevision">,
+  createWatcher: WatchFunction = (pathToWatch, options, listener) =>
+    watch(pathToWatch, options, listener)
 ): WorkspaceConnectionWatcher {
   const watchers: FSWatcher[] = [];
   const watcherByConnectionId = new Map<string, { rootPath: string; watcher: FSWatcher }>();
@@ -135,7 +175,7 @@ function createWorkspaceConnectionWatcher(
 
     [...watcherByConnectionId.entries()].forEach(([connectionId, entry]) => {
       const nextConnection = connections.find((connection) => connection.id === connectionId);
-      if (nextConnection && nextConnection.rootPath === entry.rootPath) {
+      if (nextConnection && getWorkspaceConnectionNotesRoot(nextConnection) === entry.rootPath) {
         return;
       }
 
@@ -144,13 +184,14 @@ function createWorkspaceConnectionWatcher(
     });
 
     connections.forEach((connection) => {
+      const notesRoot = getWorkspaceConnectionNotesRoot(connection);
       const existing = watcherByConnectionId.get(connection.id);
-      if (existing && existing.rootPath === connection.rootPath) {
+      if (existing && existing.rootPath === notesRoot) {
         return;
       }
 
       try {
-        const watcher = watch(connection.rootPath, (_eventType, fileName) => {
+        const watcher = createWatcher(notesRoot, { recursive: true }, (_eventType, fileName) => {
           if (typeof fileName !== "string") {
             return;
           }
@@ -163,7 +204,7 @@ function createWorkspaceConnectionWatcher(
         });
 
         watcherByConnectionId.set(connection.id, {
-          rootPath: connection.rootPath,
+          rootPath: notesRoot,
           watcher,
         });
       } catch (error) {
@@ -208,6 +249,7 @@ export async function startAppServer(
 ): Promise<{ server: HttpServer; watcher: FSWatcher | null }> {
   const context = options.context ?? createAppContext();
   const port = options.port ?? defaultPort;
+  const host = options.host?.trim() || defaultHost;
   const shouldWatchVault = options.watchVault ?? true;
 
   await context.workspace.ensureSeeded();
@@ -215,7 +257,7 @@ export async function startAppServer(
 
   const server = createAppServer(context);
   await new Promise<void>((resolve) => {
-    server.listen(port, resolve);
+    server.listen(port, host, resolve);
   });
 
   const watcherManager = shouldWatchVault ? createWorkspaceConnectionWatcher(context) : null;
@@ -232,6 +274,7 @@ function createDefaultWorkspaceConnection(vaultDir: string): WorkspaceConnection
     name: rootName,
     kind: "vault",
     rootPath: vaultDir,
+    notesRoot: vaultDir,
     isDefault: true,
   };
 }
@@ -252,13 +295,17 @@ function createWorkspaceStorageResolver(
       return undefined;
     }
 
-    const cacheKey = `${connection.id}:${connection.rootPath}`;
+    const notesRoot = getWorkspaceConnectionNotesRoot(connection);
+    const cacheKey = `${connection.id}:${notesRoot}`;
     const existing = storageByKey.get(cacheKey);
     if (existing) {
       return existing;
     }
 
-    const next = new MarkdownVault(connection.rootPath);
+    const next = new MarkdownVault(notesRoot, {
+      includeGlobs: connection.includeGlobs,
+      excludeGlobs: connection.excludeGlobs,
+    });
     storageByKey.set(cacheKey, next);
     return next;
   };
@@ -306,6 +353,14 @@ export async function handleApi(
 ): Promise<void> {
   const queryConnectionId = readOptionalQueryString(url, "connectionId");
   context.workspaceRevision.syncConnections(context.connections.listConnections().map((connection) => connection.id));
+  const agent = new AgentWorkspaceSDK({
+    workspace: context.workspace,
+    wiki: new WikiSDK(),
+    graph: context.graph,
+    connections: context.connections,
+    tabsSession: context.tabsSession,
+    policy: context.agentPolicy,
+  });
 
   if (url.pathname === "/api/workspace/state" && request.method === "GET") {
     sendJson(
@@ -313,6 +368,156 @@ export async function handleApi(
       200,
       context.workspaceRevision.getState(queryConnectionId ?? context.connections.getDefaultConnection().id)
     );
+    return;
+  }
+
+  if (url.pathname === "/api/memory/global" && request.method === "GET") {
+    sendJson(response, 200, await context.memory.readGlobalMemory());
+    return;
+  }
+
+  if (url.pathname === "/api/memory/global" && request.method === "PUT") {
+    const payload = await readJsonBody<UpdateAppMemoryInput>(request);
+    sendJson(response, 200, await context.memory.writeGlobalMemory(readRequiredBodyString(payload.content, "content")));
+    return;
+  }
+
+  if (url.pathname === "/api/memory/global" && request.method === "DELETE") {
+    await context.memory.deleteGlobalMemory();
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+
+  if (url.pathname === "/api/memory/workspace" && request.method === "GET") {
+    const memory = await readWorkspaceMemoryDocument(context, queryConnectionId);
+    sendJson(response, 200, memory);
+    return;
+  }
+
+  if (url.pathname === "/api/memory/workspace" && request.method === "PUT") {
+    const payload = await readJsonBody<UpdateAppMemoryInput>(request);
+    const connection = requireWorkspaceConnection(context, queryConnectionId);
+    const memory = await context.memory.writeWorkspaceMemory(
+      connection.id,
+      readRequiredBodyString(payload.content, "content")
+    );
+    sendJson(response, 200, withMemoryConnectionName(memory, connection.name));
+    return;
+  }
+
+  if (url.pathname === "/api/memory/workspace" && request.method === "DELETE") {
+    const connection = requireWorkspaceConnection(context, queryConnectionId);
+    await context.memory.deleteWorkspaceMemory(connection.id);
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+
+  if (url.pathname === "/api/agent/capabilities" && request.method === "GET") {
+    sendJson(response, 200, agent.getCapabilities());
+    return;
+  }
+
+  if (url.pathname === "/api/agent/connections" && request.method === "GET") {
+    sendJson(response, 200, agent.listConnections());
+    return;
+  }
+
+  if (url.pathname === "/api/agent/notes" && request.method === "GET") {
+    const result = await agent.searchNotes({
+      connectionId: queryConnectionId,
+      query: readOptionalQueryString(url, "query"),
+      limit: readOptionalNumericQuery(url, "limit"),
+    });
+    sendJson(response, 200, result);
+    return;
+  }
+
+  if (url.pathname === "/api/agent/notes/read" && request.method === "POST") {
+    const payload = await readJsonBody<AgentReadNoteInput>(request);
+    const result = await agent.readNote({
+      noteRef: parseWorkspaceNoteRef(payload.noteRef),
+    });
+    sendJson(response, 200, result);
+    return;
+  }
+
+  if (url.pathname === "/api/agent/notes/create" && request.method === "POST") {
+    const payload = await readJsonBody<AgentCreateNoteInput>(request);
+    const result = await runAgentAction(() => agent.createNote({
+      connectionId: payload.connectionId,
+      title: readRequiredBodyString(payload.title, "title"),
+      content: readRequiredBodyString(payload.content, "content"),
+      folderPath: payload.folderPath,
+    }));
+    context.workspaceRevision.bump(result.connection.id);
+    context.connectionWatcher?.refresh();
+    sendJson(response, 201, result);
+    return;
+  }
+
+  if (url.pathname === "/api/agent/notes/update" && request.method === "POST") {
+    const payload = await readJsonBody<AgentUpdateNoteInput>(request);
+    const result = await runAgentAction(() => agent.updateNote({
+      noteRef: parseWorkspaceNoteRef(payload.noteRef),
+      title: readRequiredBodyString(payload.title, "title"),
+      content: readRequiredBodyString(payload.content, "content"),
+      folderPath: payload.folderPath,
+    }));
+    context.workspaceRevision.bump(result.connection.id);
+    context.connectionWatcher?.refresh();
+    sendJson(response, 200, result);
+    return;
+  }
+
+  if (url.pathname === "/api/agent/backlinks" && request.method === "GET") {
+    const noteId = readOptionalQueryString(url, "noteId");
+    if (!noteId) {
+      throw new MarkdownVaultError(400, "noteId is required");
+    }
+
+    const result = await agent.getBacklinks({
+      noteRef: {
+        connectionId: queryConnectionId ?? context.connections.getDefaultConnection().id,
+        noteId,
+      },
+    } satisfies AgentGetBacklinksInput);
+    sendJson(response, 200, result);
+    return;
+  }
+
+  if (url.pathname === "/api/agent/graph/summary" && request.method === "GET") {
+    const result = await agent.getGraphSummary({
+      connectionId: queryConnectionId,
+    } satisfies AgentGraphSummaryInput);
+    sendJson(response, 200, result);
+    return;
+  }
+
+  if (url.pathname === "/api/agent/session" && request.method === "GET") {
+    const result = await agent.getSession(queryConnectionId);
+    sendJson(response, 200, result);
+    return;
+  }
+
+  if (url.pathname === "/api/agent/context" && request.method === "POST") {
+    const payload = await readJsonBody<AgentContextPackInput>(request);
+    const result = await agent.getContextPack({
+      query: payload.query,
+      connectionIds: payload.connectionIds,
+      limit: payload.limit,
+    });
+    sendJson(response, 200, result);
+    return;
+  }
+
+  if (url.pathname === "/api/agent/tabs/open" && request.method === "POST") {
+    const payload = await readJsonBody<AgentOpenTabInput>(request);
+    const result = await agent.openTab({
+      noteRef: parseWorkspaceNoteRef(payload.noteRef),
+      activate: payload.activate,
+      pinned: payload.pinned,
+    });
+    sendJson(response, 200, result);
     return;
   }
 
@@ -328,6 +533,16 @@ export async function handleApi(
     context.workspaceRevision.bump(connection.id);
     context.connectionWatcher?.refresh();
     sendJson(response, 201, connection);
+    return;
+  }
+
+  if (url.pathname === "/api/system/pick-directory" && request.method === "POST") {
+    const payload = await readJsonBody<{ title?: unknown; defaultPath?: unknown }>(request);
+    const selectedPath = await pickSystemDirectory(context, {
+      title: readOptionalBodyString(payload.title, "title"),
+      defaultPath: readOptionalBodyString(payload.defaultPath, "defaultPath"),
+    });
+    sendJson(response, 200, { path: selectedPath });
     return;
   }
 
@@ -380,6 +595,7 @@ export async function handleApi(
       { connectionId: noteRef.connectionId }
     );
     context.workspaceRevision.bump(noteRef.connectionId);
+    context.connectionWatcher?.refresh();
     sendJson(response, 200, note);
     return;
   }
@@ -389,6 +605,7 @@ export async function handleApi(
     const noteRef = parseWorkspaceNoteRef(payload.noteRef);
     await context.workspace.deleteNote(noteRef.noteId, { connectionId: noteRef.connectionId });
     context.workspaceRevision.bump(noteRef.connectionId);
+    context.connectionWatcher?.refresh();
     sendJson(response, 200, { ok: true });
     return;
   }
@@ -402,6 +619,7 @@ export async function handleApi(
       { connectionId: folderRef.connectionId }
     );
     context.workspaceRevision.bump(folderRef.connectionId);
+    context.connectionWatcher?.refresh();
     sendJson(response, 200, folder);
     return;
   }
@@ -411,6 +629,7 @@ export async function handleApi(
     const folderRef = parseWorkspaceFolderRef(payload.folderRef);
     await context.workspace.deleteFolder(folderRef.folderPath, { connectionId: folderRef.connectionId });
     context.workspaceRevision.bump(folderRef.connectionId);
+    context.connectionWatcher?.refresh();
     sendJson(response, 200, { ok: true });
     return;
   }
@@ -436,6 +655,8 @@ export async function handleApi(
         connectionId: effectiveConnectionId,
         activate: payload.activate,
         pinned: payload.pinned,
+        replaceActive: payload.replaceActive,
+        forceNew: payload.forceNew,
       })
     );
     sendJson(response, 200, snapshot);
@@ -651,6 +872,7 @@ export async function handleApi(
       { connectionId: payload.connectionId ?? queryConnectionId }
     );
     context.workspaceRevision.bump(payload.connectionId ?? queryConnectionId ?? context.connections.getDefaultConnection().id);
+    context.connectionWatcher?.refresh();
     sendJson(response, 201, folder);
     return;
   }
@@ -665,6 +887,7 @@ export async function handleApi(
         { connectionId: payload.connectionId ?? queryConnectionId }
       );
       context.workspaceRevision.bump(payload.connectionId ?? queryConnectionId ?? context.connections.getDefaultConnection().id);
+      context.connectionWatcher?.refresh();
       sendJson(response, 200, folder);
       return;
     }
@@ -672,6 +895,7 @@ export async function handleApi(
     if (request.method === "DELETE") {
       await context.workspace.deleteFolder(folderPath, { connectionId: queryConnectionId });
       context.workspaceRevision.bump(queryConnectionId ?? context.connections.getDefaultConnection().id);
+      context.connectionWatcher?.refresh();
       sendJson(response, 200, { ok: true });
       return;
     }
@@ -693,6 +917,7 @@ export async function handleApi(
       { connectionId: payload.connectionId ?? queryConnectionId }
     );
     context.workspaceRevision.bump(payload.connectionId ?? queryConnectionId ?? context.connections.getDefaultConnection().id);
+    context.connectionWatcher?.refresh();
     sendJson(response, 201, note);
     return;
   }
@@ -711,6 +936,7 @@ export async function handleApi(
         { connectionId: payload.connectionId ?? queryConnectionId }
       );
       context.workspaceRevision.bump(payload.connectionId ?? queryConnectionId ?? context.connections.getDefaultConnection().id);
+      context.connectionWatcher?.refresh();
       sendJson(response, 200, note);
       return;
     }
@@ -718,6 +944,7 @@ export async function handleApi(
     if (request.method === "DELETE") {
       await context.workspace.deleteNote(noteId, { connectionId: queryConnectionId });
       context.workspaceRevision.bump(queryConnectionId ?? context.connections.getDefaultConnection().id);
+      context.connectionWatcher?.refresh();
       sendJson(response, 200, { ok: true });
       return;
     }
@@ -728,76 +955,6 @@ export async function handleApi(
 
 function isNotesCollectionPath(pathname: string): boolean {
   return pathname === "/api/notes" || pathname === "/api/workspace/notes";
-}
-
-class WorkspaceConnectionWatchManager {
-  readonly watchers: FSWatcher[] = [];
-  private readonly watcherByConnectionId = new Map<string, { rootPath: string; watcher: FSWatcher }>();
-
-  constructor(private readonly context: Pick<AppContext, "connections" | "workspaceRevision">) {}
-
-  refresh(): void {
-    const connections = this.context.connections.listConnections();
-    const activeIds = new Set(connections.map((connection) => connection.id));
-
-    [...this.watcherByConnectionId.entries()].forEach(([connectionId, entry]) => {
-      const nextConnection = connections.find((connection) => connection.id === connectionId);
-      if (nextConnection && nextConnection.rootPath === entry.rootPath) {
-        return;
-      }
-
-      entry.watcher.close();
-      this.watcherByConnectionId.delete(connectionId);
-    });
-
-    connections.forEach((connection) => {
-      const existing = this.watcherByConnectionId.get(connection.id);
-      if (existing && existing.rootPath === connection.rootPath) {
-        return;
-      }
-
-      try {
-        const watcher = watch(connection.rootPath, (_eventType, fileName) => {
-          if (typeof fileName !== "string") {
-            return;
-          }
-
-          this.context.workspaceRevision.bump(connection.id);
-        });
-        watcher.on("error", (error) => {
-          console.error(`Workspace watcher error for ${connection.id}`, error);
-        });
-        this.watcherByConnectionId.set(connection.id, {
-          rootPath: connection.rootPath,
-          watcher,
-        });
-      } catch (error) {
-        console.error(`Failed to watch workspace connection ${connection.id}`, error);
-      }
-    });
-
-    this.watchers.splice(
-      0,
-      this.watchers.length,
-      ...[...this.watcherByConnectionId.values()].map((entry) => entry.watcher)
-    );
-
-    [...this.watcherByConnectionId.keys()].forEach((connectionId) => {
-      if (!activeIds.has(connectionId)) {
-        const entry = this.watcherByConnectionId.get(connectionId);
-        entry?.watcher.close();
-        this.watcherByConnectionId.delete(connectionId);
-      }
-    });
-  }
-
-  close(): void {
-    this.watcherByConnectionId.forEach((entry) => {
-      entry.watcher.close();
-    });
-    this.watcherByConnectionId.clear();
-    this.watchers.splice(0, this.watchers.length);
-  }
 }
 
 function getNoteIdFromPath(pathname: string): string | null {
@@ -858,6 +1015,20 @@ function readNumericQuery(url: URL, key: string, fallback: number): number {
   return parsed;
 }
 
+function readOptionalNumericQuery(url: URL, key: string): number | undefined {
+  const value = url.searchParams.get(key);
+  if (value === null || !value.trim()) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    throw new MarkdownVaultError(400, `Invalid ${key}`);
+  }
+
+  return parsed;
+}
+
 function readRequiredBodyString(value: unknown, key: string): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new MarkdownVaultError(400, `${key} is required`);
@@ -866,43 +1037,25 @@ function readRequiredBodyString(value: unknown, key: string): string {
   return value.trim();
 }
 
-function readWorkspaceNoteRef(value: unknown): WorkspaceNoteRef {
-  if (!value || typeof value !== "object") {
-    throw new MarkdownVaultError(400, "noteRef is required");
+function readOptionalBodyString(value: unknown, key: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
   }
 
-  const candidate = value as Partial<WorkspaceNoteRef>;
-  return {
-    connectionId: readRequiredBodyString(candidate.connectionId, "noteRef.connectionId"),
-    noteId: readRequiredBodyString(candidate.noteId, "noteRef.noteId"),
-  };
-}
-
-function readWorkspaceFolderRef(value: unknown): WorkspaceFolderRef {
-  if (!value || typeof value !== "object") {
-    throw new MarkdownVaultError(400, "folderRef is required");
-  }
-
-  const candidate = value as Partial<WorkspaceFolderRef>;
-  return {
-    connectionId: readRequiredBodyString(candidate.connectionId, "folderRef.connectionId"),
-    folderPath: readRequiredBodyString(candidate.folderPath, "folderRef.folderPath"),
-  };
-}
-
-async function getNoteByRef(context: AppContext, noteRef: WorkspaceNoteRef) {
-  const notes = await context.workspace.listNotes({ connectionId: noteRef.connectionId });
-  const note = notes.find((item) => item.id === noteRef.noteId);
-  if (!note) {
-    throw new MarkdownVaultError(404, "Note not found");
-  }
-
-  return note;
+  return readRequiredBodyString(value, key);
 }
 
 function runWorkspaceMutation<T>(action: () => T): T {
   try {
     return action();
+  } catch (error) {
+    throw normalizeWorkspaceError(error);
+  }
+}
+
+async function runAgentAction<T>(action: () => Promise<T>): Promise<T> {
+  try {
+    return await action();
   } catch (error) {
     throw normalizeWorkspaceError(error);
   }
@@ -933,7 +1086,31 @@ function normalizeWorkspaceError(error: unknown): Error {
     return new MarkdownVaultError(400, error.message);
   }
 
+  if (error.message === AGENT_NOTE_WRITE_DISABLED_ERROR) {
+    return new MarkdownVaultError(403, error.message);
+  }
+
   if (error.message.endsWith("is required")) {
+    return new MarkdownVaultError(400, error.message);
+  }
+
+  if (error.message === "rootPath, notesRoot, or codeRoot is required") {
+    return new MarkdownVaultError(400, error.message);
+  }
+
+  if (error.message === "limit must be a positive integer") {
+    return new MarkdownVaultError(400, error.message);
+  }
+
+  if (error.message === "connectionIds must be an array of strings") {
+    return new MarkdownVaultError(400, error.message);
+  }
+
+  if (
+    error.message.endsWith("must point to a directory")
+    || error.message.endsWith("parent path is not a directory")
+    || error.message.includes("parent directory does not exist:")
+  ) {
     return new MarkdownVaultError(400, error.message);
   }
 
@@ -943,6 +1120,217 @@ function normalizeWorkspaceError(error: unknown): Error {
   }
 
   return error;
+}
+
+async function pickSystemDirectory(
+  context: Pick<AppContext, "systemDirectoryPicker">,
+  options: PickDirectoryOptions
+): Promise<string | null> {
+  const picker = context.systemDirectoryPicker;
+  if (!picker) {
+    throw new MarkdownVaultError(501, "System folder picker is not available");
+  }
+
+  try {
+    return await picker(options);
+  } catch (error) {
+    throw normalizeSystemPickerError(error);
+  }
+}
+
+async function readWorkspaceMemoryDocument(
+  context: Pick<AppContext, "connections" | "memory">,
+  connectionId: string | undefined
+): Promise<AppMemoryDocument & { connectionName: string }> {
+  const connection = requireWorkspaceConnection(context, connectionId);
+  const memory = await context.memory.readWorkspaceMemory(connection.id);
+  return withMemoryConnectionName(memory, connection.name);
+}
+
+function requireWorkspaceConnection(
+  context: Pick<AppContext, "connections">,
+  connectionId: string | undefined
+): WorkspaceConnection {
+  const resolvedConnectionId = connectionId ?? context.connections.getDefaultConnection().id;
+  const connection = context.connections.getConnection(resolvedConnectionId);
+  if (!connection) {
+    throw new MarkdownVaultError(404, "Connection not found");
+  }
+
+  return connection;
+}
+
+function withMemoryConnectionName<T extends AppMemoryDocument>(
+  memory: T,
+  connectionName: string
+): T & { connectionName: string } {
+  return {
+    ...memory,
+    connectionName,
+  };
+}
+
+function createSystemDirectoryPicker(): SystemDirectoryPicker {
+  const platform = os.platform();
+
+  if (platform === "darwin") {
+    return pickDirectoryWithAppleScript;
+  }
+
+  if (platform === "win32") {
+    return pickDirectoryWithPowerShell;
+  }
+
+  if (platform === "linux") {
+    return pickDirectoryWithZenity;
+  }
+
+  return async () => {
+    throw new Error(`System folder picker is not supported on ${platform}`);
+  };
+}
+
+async function pickDirectoryWithAppleScript(options: PickDirectoryOptions): Promise<string | null> {
+  const scriptLines = [
+    `set chosenFolder to choose folder with prompt ${toAppleScriptString(options.title ?? "Choose workspace folder")}${buildAppleScriptDefaultLocation(options.defaultPath)}`,
+    "POSIX path of chosenFolder",
+  ];
+
+  try {
+    const output = await execFileText("osascript", scriptLines.flatMap((line) => ["-e", line]));
+    const trimmed = output.trim();
+    return trimmed ? trimmed.replace(/[\\/]+$/, "") : null;
+  } catch (error) {
+    if (isPickerCancellation(error)) {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+async function pickDirectoryWithPowerShell(options: PickDirectoryOptions): Promise<string | null> {
+  const prompt = toPowerShellSingleQuoted(options.title ?? "Choose workspace folder");
+  const defaultPath = options.defaultPath?.trim();
+  const script = [
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
+    `$dialog.Description = '${prompt}'`,
+    "$dialog.ShowNewFolderButton = $true",
+    ...(defaultPath ? [`$dialog.SelectedPath = '${toPowerShellSingleQuoted(defaultPath)}'`] : []),
+    "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {",
+    "  [Console]::Out.Write($dialog.SelectedPath)",
+    "}",
+  ].join("\n");
+
+  const output = await execFileText("powershell", ["-NoProfile", "-Command", script]);
+  const trimmed = output.trim();
+  return trimmed ? trimmed.replace(/[\\/]+$/, "") : null;
+}
+
+async function pickDirectoryWithZenity(options: PickDirectoryOptions): Promise<string | null> {
+  const args = [
+    "--file-selection",
+    "--directory",
+    "--title",
+    options.title?.trim() || "Choose workspace folder",
+  ];
+
+  const defaultPath = options.defaultPath?.trim();
+  if (defaultPath) {
+    args.push("--filename", ensureTrailingSlash(defaultPath));
+  }
+
+  try {
+    const output = await execFileText("zenity", args);
+    const trimmed = output.trim();
+    return trimmed ? trimmed.replace(/[\\/]+$/, "") : null;
+  } catch (error) {
+    if (isPickerCancellation(error)) {
+      return null;
+    }
+
+    if (isNodeError(error) && error.code === "ENOENT") {
+      throw new Error("System folder picker requires zenity on Linux");
+    }
+
+    throw error;
+  }
+}
+
+function buildAppleScriptDefaultLocation(defaultPath: string | undefined): string {
+  const normalized = defaultPath?.trim();
+  if (!normalized) {
+    return "";
+  }
+
+  return ` default location POSIX file ${toAppleScriptString(normalized)}`;
+}
+
+function toAppleScriptString(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function toPowerShellSingleQuoted(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+function ensureTrailingSlash(value: string): string {
+  return /[\\/]$/.test(value) ? value : `${value}/`;
+}
+
+function execFileText(command: string, args: string[]): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    execFile(command, args, { encoding: "utf8" }, (error, stdout, stderr) => {
+      if (error) {
+        if (stderr) {
+          const enhancedError = error as NodeJS.ErrnoException & { stderr?: string };
+          enhancedError.stderr = stderr;
+        }
+        reject(error);
+        return;
+      }
+
+      resolve(stdout);
+    });
+  });
+}
+
+function isPickerCancellation(error: unknown): boolean {
+  if (!isNodeError(error)) {
+    return false;
+  }
+
+  const stderrValue = (error as { stderr?: unknown }).stderr;
+  const stderr = typeof stderrValue === "string"
+    ? stderrValue
+    : "";
+  return error.code === "1"
+    || stderr.includes("User canceled")
+    || stderr.includes("(-128)")
+    || stderr.includes("execution error: User canceled");
+}
+
+function normalizeSystemPickerError(error: unknown): Error {
+  if (error instanceof MarkdownVaultError) {
+    return error;
+  }
+
+  if (isNodeError(error) && error.code === "ENOENT") {
+    return new MarkdownVaultError(501, "System folder picker is not available on this machine");
+  }
+
+  if (error instanceof Error) {
+    if (error.message.startsWith("System folder picker is not supported")) {
+      return new MarkdownVaultError(501, error.message);
+    }
+
+    if (error.message === "System folder picker requires zenity on Linux") {
+      return new MarkdownVaultError(501, error.message);
+    }
+  }
+
+  return normalizeWorkspaceError(error);
 }
 
 async function serveStatic(
@@ -1020,6 +1408,12 @@ function sendJson(response: ServerResponse, statusCode: number, payload: unknown
 }
 
 function handleError(response: ServerResponse, error: unknown): void {
+  const normalized = normalizeWorkspaceError(error);
+  if (normalized instanceof MarkdownVaultError) {
+    sendJson(response, normalized.statusCode, { error: normalized.message });
+    return;
+  }
+
   if (error instanceof MarkdownVaultError) {
     sendJson(response, error.statusCode, { error: error.message });
     return;
@@ -1044,7 +1438,11 @@ if (isMainModule()) {
       const address = server.address();
       const resolvedPort =
         typeof address === "object" && address !== null ? address.port : defaultPort;
-      console.log(`Sourcery is running at http://127.0.0.1:${resolvedPort}`);
+      const resolvedHost =
+        typeof address === "object" && address !== null && typeof address.address === "string"
+          ? address.address
+          : defaultHost;
+      console.log(`Sourcery is running at http://${resolvedHost}:${resolvedPort}`);
     })
     .catch((error) => {
       console.error(error);
