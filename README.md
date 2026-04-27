@@ -67,7 +67,7 @@ npm run verify
 - `src/core/workspace/*`
 - `src/core/wiki/*`
 - browser smoke для загрузки UI, открытия заметки, editor/preview, search, Graph и Memory
-- MCP smoke для agent tools/resources/prompts, read-only policy и write-enabled note create/update
+- MCP smoke для agent tools/resources/prompts, attached connector к запущенному HTTP server, read-only policy и write-enabled note create/update
 
 ## AI Assistants
 
@@ -91,6 +91,8 @@ npm start
 ```
 
 Для безопасных изменений ассистенту стоит сначала читать `README.md`, `AGENTS.md` и `DEVELOPMENT_GUIDELINES.md`.
+
+Для внешних репозиториев предпочтительный MCP режим такой: Sourcery запускается вручную через `npm start`, а агент подключает `/absolute/path/to/obsidian_md_custom/dist/mcp-connect.js` с `SOURCERY_URL=http://127.0.0.1:4173`. Прямой `dist/mcp.js` оставлен для embedded/test сценариев.
 
 ## Как это работает
 

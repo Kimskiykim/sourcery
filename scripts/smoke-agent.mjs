@@ -4,10 +4,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { createAppContext, startAppServer } from "../dist/server.js";
+
 const rootDir = process.cwd();
 
 await runReadOnlySmoke();
 await runWriteEnabledSmoke();
+await runAttachedHttpSmoke();
 
 console.log("Agent MCP smoke passed");
 
@@ -145,16 +148,83 @@ async function runWriteEnabledSmoke() {
   }
 }
 
+async function runAttachedHttpSmoke() {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sourcery-agent-smoke-attached-"));
+  const host = "127.0.0.1";
+  const port = 5200 + Math.floor(Math.random() * 1000);
+  const baseUrl = `http://${host}:${port}`;
+  const context = createAppContext({
+    rootDir,
+    distDir: path.join(rootDir, "dist"),
+    vaultDir: path.join(tempRoot, "vault"),
+    appStateDir: path.join(tempRoot, ".obsidian-lite"),
+  });
+  const { server, watcher } = await startAppServer({
+    context,
+    host,
+    port,
+    watchVault: true,
+  });
+  const client = startMcpClient(tempRoot, {
+    connectUrl: baseUrl,
+  });
+
+  try {
+    await client.initialize();
+    await writeFile(path.join(tempRoot, "vault", "AGENTS.md"), "# Agent Instructions\nUse attached Sourcery.", "utf8");
+    await writeFile(path.join(tempRoot, "vault", "README.md"), "# Attached Project Readme", "utf8");
+
+    const tools = await client.request("tools/list", {});
+    const toolNames = tools.tools.map((tool) => tool.name);
+    assert.ok(toolNames.includes("connections.list"));
+    assert.ok(toolNames.includes("context.pack"));
+    assert.equal(toolNames.includes("notes.create"), false);
+    assert.equal(toolNames.includes("notes.update"), false);
+
+    const connections = await client.callTool("connections.list", {});
+    assert.equal(connections.defaultConnectionId, "default");
+
+    const contextPack = await client.callTool("context.pack", {
+      query: "Welcome",
+      limit: 5,
+    });
+    assert.ok(contextPack.bootstrapNotes.some((note) => note.noteRef.noteId === "AGENTS.md"));
+    assert.ok(contextPack.bootstrapNotes.some((note) => note.noteRef.noteId === "README.md"));
+    assert.ok(contextPack.notes.some((note) => note.noteRef.noteId === "Welcome.md"));
+
+    const blockedCreate = await client.callToolRaw("notes.create", {
+      title: "Blocked",
+      content: "# Blocked",
+    });
+    assert.equal(blockedCreate.isError, true);
+    assert.match(blockedCreate.content[0]?.text ?? "", /unknown tool|disabled by policy/i);
+  } finally {
+    await client.close();
+    watcher?.close();
+    context.connectionWatcher?.close();
+    await new Promise((resolve) => server.close(resolve));
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
 function startMcpClient(tempRoot, options) {
-  const child = spawn(process.execPath, ["dist/mcp.js"], {
-    cwd: rootDir,
-    env: {
-      ...process.env,
-      SOURCERY_ROOT_DIR: rootDir,
-      SOURCERY_VAULT_DIR: path.join(tempRoot, "vault"),
-      SOURCERY_APP_STATE_DIR: path.join(tempRoot, ".obsidian-lite"),
-      SOURCERY_AGENT_ALLOW_NOTE_WRITES: options.allowWrites ? "1" : "0",
-    },
+  const isAttached = typeof options.connectUrl === "string";
+  const child = spawn(process.execPath, [
+    path.join(rootDir, "dist", isAttached ? "mcp-connect.js" : "mcp.js"),
+  ], {
+    cwd: isAttached ? tempRoot : rootDir,
+    env: isAttached
+      ? {
+        ...process.env,
+        SOURCERY_URL: options.connectUrl,
+      }
+      : {
+        ...process.env,
+        SOURCERY_ROOT_DIR: rootDir,
+        SOURCERY_VAULT_DIR: path.join(tempRoot, "vault"),
+        SOURCERY_APP_STATE_DIR: path.join(tempRoot, ".obsidian-lite"),
+        SOURCERY_AGENT_ALLOW_NOTE_WRITES: options.allowWrites ? "1" : "0",
+      },
     stdio: ["pipe", "pipe", "pipe"],
   });
 

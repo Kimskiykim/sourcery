@@ -1,4 +1,4 @@
-import type { AgentWorkspaceSDK } from "./agent-sdk.js";
+import type { AgentRuntime } from "./agent-runtime.js";
 import {
   getMcpPrompt,
   listMcpPrompts,
@@ -38,7 +38,7 @@ const JSON_RPC_VERSION = "2.0" as const;
 export class SourceryMcpServer {
   private initialized = false;
 
-  constructor(private readonly agent: AgentWorkspaceSDK) {}
+  constructor(private readonly agent: AgentRuntime) {}
 
   async handleMessage(message: JsonRpcRequest): Promise<JsonRpcResponse | null> {
     if (message.jsonrpc !== JSON_RPC_VERSION || typeof message.method !== "string") {
@@ -205,7 +205,7 @@ export class SourceryMcpServer {
   }
 }
 
-export function listMcpTools(agent: AgentWorkspaceSDK): McpTool[] {
+export function listMcpTools(agent: AgentRuntime): McpTool[] {
   return [
     {
       name: "connections.list",
@@ -331,7 +331,7 @@ export class McpMessageBuffer {
 }
 
 async function dispatchToolCall(
-  agent: AgentWorkspaceSDK,
+  agent: AgentRuntime,
   toolName: string,
   args: Record<string, unknown>
 ): Promise<unknown> {

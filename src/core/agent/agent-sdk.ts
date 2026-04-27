@@ -29,6 +29,7 @@ import type { WorkspaceNote } from "../workspace/types.js";
 import { WorkspaceSDK } from "../workspace/workspace-sdk.js";
 import { matchesNoteQuery } from "../wiki/query.js";
 import { WikiSDK } from "../wiki/wiki-sdk.js";
+import type { AgentRuntime } from "./agent-runtime.js";
 
 const DEFAULT_SEARCH_LIMIT = 20;
 const MAX_SEARCH_LIMIT = 100;
@@ -116,7 +117,7 @@ type AgentWorkspaceSDKOptions = {
   policy?: Partial<AgentAccessPolicy>;
 };
 
-export class AgentWorkspaceSDK {
+export class AgentWorkspaceSDK implements AgentRuntime {
   private readonly policy: AgentAccessPolicy;
 
   constructor(private readonly options: AgentWorkspaceSDKOptions) {

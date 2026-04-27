@@ -66,16 +66,22 @@ http://127.0.0.1:4173
 
 После этого агент может ходить в HTTP API.
 
-### 2. Запуск MCP Server
+### 2. Запуск MCP Connector К Уже Запущенному Sourcery
 
 ```bash
 npm install
 npm run build
-npm run mcp
+npm start
 ```
 
-`npm run mcp` запускает MCP transport через `stdio`.
-Это основной способ подключать Sourcery к внешнему агенту как MCP server.
+В другом терминале можно проверить attached MCP connector:
+
+```bash
+SOURCERY_URL=http://127.0.0.1:4173 npm run mcp:connect
+```
+
+`npm run mcp:connect` запускает только тонкий `stdio` connector для MCP-клиента.
+Он не открывает vault напрямую и не создаёт отдельный Sourcery runtime: все tool calls идут в уже запущенный HTTP server.
 
 ## Способы Подключения
 
@@ -117,29 +123,38 @@ curl -X POST http://127.0.0.1:4173/api/agent/context \
   -d '{"query":"#backend","limit":10}'
 ```
 
-### Вариант 2. MCP
+### Вариант 2. MCP Attached Connector
 
 Подходит, если агентный клиент умеет MCP и предпочитает tools/resources/prompts вместо ручной работы с HTTP.
 
-После сборки MCP server можно подключать как stdio command. Типовой конфиг:
+Рекомендуемый режим для внешних кодовых агентов: пользователь вручную запускает Sourcery, а агент подключает только connector к уже запущенному серверу.
+
+```bash
+cd /absolute/path/to/obsidian_md_custom
+npm start
+```
+
+Типовой MCP config в другом проекте:
 
 ```json
 {
   "mcpServers": {
     "sourcery": {
       "command": "node",
-      "args": ["dist/mcp.js"],
-      "cwd": "/absolute/path/to/obsidian_md_custom"
+      "args": ["/absolute/path/to/obsidian_md_custom/dist/mcp-connect.js"],
+      "env": {
+        "SOURCERY_URL": "http://127.0.0.1:4173"
+      }
     }
   }
 }
 ```
 
-Если клиент сам умеет выполнять npm scripts, можно использовать и `npm run mcp`, но `node dist/mcp.js` обычно проще и стабильнее.
+Такой config не должен указывать `cwd` на Sourcery repo в проекте-потребителе. Если Sourcery не запущен, connector завершится с ошибкой подключения.
 
-### MCP Runtime Environment
+### Embedded MCP Runtime
 
-Для тестового или embedded запуска MCP entrypoint можно переопределить локальные пути:
+Для тестового или embedded запуска остаётся прямой MCP entrypoint:
 
 ```bash
 SOURCERY_ROOT_DIR=/absolute/path/to/obsidian_md_custom \
@@ -148,7 +163,9 @@ SOURCERY_APP_STATE_DIR=/absolute/path/to/.obsidian-lite \
 node dist/mcp.js
 ```
 
-По умолчанию MCP запускается в read-only agent mode. Чтобы явно включить agent write tools:
+Этот режим сам создаёт Sourcery runtime внутри MCP процесса. Его стоит использовать для тестов, локальной отладки или специальных embedded сценариев, но не как дефолтный способ подключения внешнего repo.
+
+По умолчанию embedded MCP запускается в read-only agent mode. Чтобы явно включить agent write tools:
 
 ```bash
 SOURCERY_AGENT_ALLOW_NOTE_WRITES=1 node dist/mcp.js

@@ -5,6 +5,7 @@
   "scripts": {
     "build": "tsc",
     "mcp": "node dist/mcp.js",
+    "mcp:connect": "node dist/mcp-connect.js",
     "smoke:agent": "npm run build && node scripts/smoke-agent.mjs",
     "smoke:ui": "npm run build && node scripts/smoke-ui.mjs",
     "test": "npm run build && node --test \"dist/**/*.test.js\"",

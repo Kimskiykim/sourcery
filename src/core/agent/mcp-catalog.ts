@@ -1,4 +1,4 @@
-import type { AgentWorkspaceSDK } from "./agent-sdk.js";
+import type { AgentRuntime } from "./agent-runtime.js";
 
 export interface McpResource {
   uri: string;
@@ -177,7 +177,7 @@ export function listMcpResourceTemplates(): McpResourceTemplate[] {
 }
 
 export async function readMcpResource(
-  agent: AgentWorkspaceSDK,
+  agent: AgentRuntime,
   uri: string
 ): Promise<McpReadResourceResult> {
   const payload = await readResourcePayload(agent, uri);
@@ -200,7 +200,7 @@ export function listMcpPrompts(): McpPrompt[] {
 }
 
 export async function getMcpPrompt(
-  agent: AgentWorkspaceSDK,
+  agent: AgentRuntime,
   name: string,
   args: Record<string, unknown>
 ): Promise<McpPromptResult> {
@@ -214,12 +214,12 @@ export async function getMcpPrompt(
   }
 }
 
-async function readResourcePayload(agent: AgentWorkspaceSDK, uri: string): Promise<unknown> {
+async function readResourcePayload(agent: AgentRuntime, uri: string): Promise<unknown> {
   switch (uri) {
     case "sourcery://capabilities":
       return agent.getCapabilities();
     case "sourcery://connections":
-      return agent.listConnections();
+      return await agent.listConnections();
     case "sourcery://context/overview":
       return agent.getContextPack({ limit: 20 });
     case "sourcery://session/default":
@@ -243,7 +243,7 @@ async function readResourcePayload(agent: AgentWorkspaceSDK, uri: string): Promi
 }
 
 async function buildProjectContextBootstrapPrompt(
-  agent: AgentWorkspaceSDK,
+  agent: AgentRuntime,
   args: Record<string, unknown>
 ): Promise<McpPromptResult> {
   const task = readOptionalString(args.task, "task");
@@ -251,7 +251,9 @@ async function buildProjectContextBootstrapPrompt(
   const connectionIds = readOptionalStringList(args.connectionIds, "connectionIds");
   const limit = readOptionalInteger(args.limit, "limit");
   const capabilities = agent.getCapabilities();
-  const connections = agent.listConnections();
+  const connections = await agent.listConnections();
+  const canWriteNotes = hasAvailableTool(capabilities, "notes.create")
+    && hasAvailableTool(capabilities, "notes.update");
   const contextPack = await agent.getContextPack({
     query,
     connectionIds,
@@ -278,8 +280,10 @@ async function buildProjectContextBootstrapPrompt(
     "1. Read the context pack below.",
     "2. Use notes.read on the most relevant noteRefs before writing code or docs.",
     "3. Narrow with notes.search or context.pack if the current query is too broad.",
-    "4. Use notes.create / notes.update for markdown knowledge artifacts.",
-    "5. Keep markdown in connection notesRoot; do not treat codeRoot as the docs destination unless the connection is configured that way.",
+    canWriteNotes
+      ? "4. Use notes.create / notes.update for markdown knowledge artifacts."
+      : "4. Sourcery note write tools are disabled; use Sourcery as a read/context layer.",
+    "5. Keep markdown in connection notesRoot when note write tools are available; do not treat codeRoot as the docs destination unless the connection is configured that way.",
     "",
   ];
 
@@ -315,14 +319,18 @@ async function buildProjectContextBootstrapPrompt(
 }
 
 async function buildAdrBootstrapPrompt(
-  agent: AgentWorkspaceSDK,
+  agent: AgentRuntime,
   args: Record<string, unknown>
 ): Promise<McpPromptResult> {
   const connectionId = readRequiredString(args.connectionId, "connectionId");
   const decision = readRequiredString(args.decision, "decision");
   const contextQuery = readOptionalString(args.contextQuery, "contextQuery");
   const limit = readOptionalInteger(args.limit, "limit");
-  const connection = agent.listConnections().connections.find((item) => item.id === connectionId);
+  const capabilities = agent.getCapabilities();
+  const canWriteNotes = hasAvailableTool(capabilities, "notes.create")
+    && hasAvailableTool(capabilities, "notes.update");
+  const connections = await agent.listConnections();
+  const connection = connections.connections.find((item) => item.id === connectionId);
   if (!connection) {
     throw new Error(`Unknown connection: ${connectionId}`);
   }
@@ -338,16 +346,24 @@ async function buildAdrBootstrapPrompt(
     `Decision summary: ${decision}`,
     "",
     "Constraints:",
-    "- Write markdown into the connection notesRoot, not into codeRoot unless they are the same path.",
-    "- Prefer creating a new ADR note rather than overwriting an unrelated note.",
+    canWriteNotes
+      ? "- Write markdown into the connection notesRoot, not into codeRoot unless they are the same path."
+      : "- Sourcery note write tools are disabled; draft the ADR content and ask before writing through another channel.",
+    canWriteNotes
+      ? "- Prefer creating a new ADR note rather than overwriting an unrelated note."
+      : "- Do not assume notes.create or notes.update is available in this session.",
     "- Read the most relevant noteRefs from the context pack before writing.",
     "- Use a stable ADR structure: Title, Status, Context, Decision, Consequences, References.",
     "",
     "Suggested workflow:",
     "1. Inspect the context pack below.",
     "2. Read the most relevant noteRefs with notes.read.",
-    "3. Create a new ADR note with notes.create.",
-    "4. If you revise it after review, use notes.update on that ADR noteRef.",
+    canWriteNotes
+      ? "3. Create a new ADR note with notes.create."
+      : "3. Draft the ADR in your response or in the repository only if the user asked for that.",
+    canWriteNotes
+      ? "4. If you revise it after review, use notes.update on that ADR noteRef."
+      : "4. Ask for write-enabled Sourcery only if the user wants the ADR persisted through MCP.",
     "",
   ];
 
@@ -375,6 +391,13 @@ async function buildAdrBootstrapPrompt(
       },
     ],
   };
+}
+
+function hasAvailableTool(
+  capabilities: { tools: Array<{ name: string }> },
+  toolName: string
+): boolean {
+  return capabilities.tools.some((tool) => tool.name === toolName);
 }
 
 function matchTemplateUri(uri: string, prefix: string): string | null {

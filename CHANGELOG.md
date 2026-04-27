@@ -10,6 +10,7 @@
 - автоматизированный `npm run smoke:agent` для MCP stdio проверки agent-интеграции
 - `npm run verify`, объединяющий unit/API тесты и UI smoke
 - `context.pack` теперь отдельно возвращает bootstrap entrypoints проекта для кодовых агентов
+- `npm run mcp:connect` для подключения MCP-клиентов к уже запущенному Sourcery HTTP server без запуска Sourcery runtime внутри агентского проекта
 - веб-интерфейс для markdown vault с editor / preview / split
 - хранение заметок в реальных `.md` файлах внутри `vault/`
 - папки, вложенные markdown-файлы и группировка заметок по папкам
