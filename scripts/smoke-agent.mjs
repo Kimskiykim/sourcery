@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -17,6 +17,8 @@ async function runReadOnlySmoke() {
 
   try {
     await client.initialize();
+    await writeFile(path.join(tempRoot, "vault", "AGENTS.md"), "# Agent Instructions\nUse Sourcery.", "utf8");
+    await writeFile(path.join(tempRoot, "vault", "README.md"), "# Project Readme", "utf8");
 
     const tools = await client.request("tools/list", {});
     const toolNames = tools.tools.map((tool) => tool.name);
@@ -54,6 +56,8 @@ async function runReadOnlySmoke() {
     });
     assert.equal(contextPack.connections[0]?.connection.id, "default");
     assert.ok(contextPack.totalMatches >= 1);
+    assert.ok(contextPack.bootstrapNotes.some((note) => note.noteRef.noteId === "AGENTS.md"));
+    assert.ok(contextPack.bootstrapNotes.some((note) => note.noteRef.noteId === "README.md"));
     assert.ok(contextPack.notes.some((note) => note.noteRef.noteId === "Welcome.md"));
 
     const opened = await client.callTool("tabs.open", {

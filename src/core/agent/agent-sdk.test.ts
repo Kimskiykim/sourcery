@@ -230,10 +230,23 @@ test("agent sdk builds an aggregated context pack across multiple connections", 
     title: "Default ADR",
     content: "#backend [[Shared]]",
   });
+  await workspace.createNote({
+    title: "AGENTS",
+    content: "# Agent onboarding",
+  });
   const repoNote = await workspace.createNote({
     title: "Repo ADR",
     content: "#backend",
     folderPath: "adr",
+  }, { connectionId: "project-a" });
+  await workspace.createNote({
+    title: "README",
+    content: "# Project A",
+  }, { connectionId: "project-a" });
+  await workspace.createNote({
+    title: "FRAMEWORK",
+    content: "# Framework",
+    folderPath: "agents_md",
   }, { connectionId: "project-a" });
   await agent.openTab({
     noteRef: {
@@ -249,6 +262,14 @@ test("agent sdk builds an aggregated context pack across multiple connections", 
   });
 
   assert.equal(contextPack.totalMatches, 2);
+  assert.deepEqual(
+    contextPack.bootstrapNotes.map((item) => `${item.noteRef.connectionId}:${item.noteRef.noteId}`),
+    [
+      "default:AGENTS.md",
+      "project-a:README.md",
+      "project-a:agents_md/FRAMEWORK.md",
+    ]
+  );
   assert.deepEqual(
     contextPack.notes.map((item) => `${item.noteRef.connectionId}:${item.noteRef.noteId}`).sort(),
     [`default:${defaultNote.id}`, `project-a:${repoNote.id}`].sort()

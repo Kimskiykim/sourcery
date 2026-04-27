@@ -140,5 +140,6 @@ export interface AgentContextPackResult {
   query: string;
   totalMatches: number;
   connections: AgentContextConnectionSummary[];
+  bootstrapNotes: AgentNoteSummary[];
   notes: AgentNoteSummary[];
 }

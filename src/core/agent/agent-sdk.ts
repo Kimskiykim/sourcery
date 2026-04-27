@@ -33,6 +33,16 @@ import { WikiSDK } from "../wiki/wiki-sdk.js";
 const DEFAULT_SEARCH_LIMIT = 20;
 const MAX_SEARCH_LIMIT = 100;
 const AGENT_NOTE_WRITE_DISABLED_ERROR = "Agent note writes are disabled by policy";
+const BOOTSTRAP_NOTE_PRIORITIES = [
+  "AGENTS.md",
+  "README.md",
+  "CLAUDE.md",
+  "agents_md/FRAMEWORK.md",
+  "agents_md/shared/COLLABORATION.md",
+  "agents_md/shared/SESSIONS.md",
+  "hybrid/README.md",
+  "hybrid/context/DECISIONS.md",
+];
 
 const AGENT_TOOLS: AgentToolDescriptor[] = [
   {
@@ -284,6 +294,7 @@ export class AgentWorkspaceSDK {
 
       return {
         connection,
+        notes,
         matching,
         summary: {
           connection,
@@ -305,6 +316,9 @@ export class AgentWorkspaceSDK {
       connections: connectionData
         .map((item) => item.summary)
         .sort((left, right) => left.connection.id.localeCompare(right.connection.id, "en")),
+      bootstrapNotes: connectionData
+        .flatMap(({ connection, notes }) => getBootstrapNotes(connection, notes, this.options.wiki))
+        .sort(compareBootstrapNotes),
       notes: connectionData
         .flatMap(({ connection, matching }) =>
           matching.map(({ note, metadata }) => toAgentNoteSummary(connection, note, metadata))
@@ -418,6 +432,40 @@ function toAgentBacklinkSummary(connectionId: string, note: WorkspaceNote): Agen
     folderPath: note.folderPath,
     updatedAt: note.updatedAt,
   };
+}
+
+function getBootstrapNotes(
+  connection: WorkspaceConnection,
+  notes: WorkspaceNote[],
+  wiki: WikiSDK
+): AgentNoteSummary[] {
+  const notesById = new Map(notes.map((note) => [normalizeNoteId(note.id), note]));
+  return BOOTSTRAP_NOTE_PRIORITIES
+    .map((noteId) => notesById.get(normalizeNoteId(noteId)) ?? null)
+    .filter((note): note is WorkspaceNote => note !== null)
+    .map((note) => toAgentNoteSummary(connection, note, wiki.getMetadata(note, notes)));
+}
+
+function normalizeNoteId(noteId: string): string {
+  return noteId.replaceAll("\\", "/").toLowerCase();
+}
+
+function compareBootstrapNotes(left: AgentNoteSummary, right: AgentNoteSummary): number {
+  const byConnection = left.noteRef.connectionId.localeCompare(right.noteRef.connectionId, "en");
+  if (byConnection !== 0) {
+    return byConnection;
+  }
+
+  return getBootstrapPriority(left.noteRef.noteId) - getBootstrapPriority(right.noteRef.noteId)
+    || left.noteRef.noteId.localeCompare(right.noteRef.noteId, "en");
+}
+
+function getBootstrapPriority(noteId: string): number {
+  const normalized = normalizeNoteId(noteId);
+  const index = BOOTSTRAP_NOTE_PRIORITIES
+    .map((item) => normalizeNoteId(item))
+    .indexOf(normalized);
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
 }
 
 function createExcerpt(content: string): string {
