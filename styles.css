@@ -2749,11 +2749,31 @@ body.is-resizing-sidebar .sidebar-resizer::before {
   }
 
   .activity-bar {
-    display: none;
+    min-height: auto;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    padding: 6px;
+    border-radius: 18px;
+    border-right: 1px solid var(--border);
   }
 
   .sidebar-resizer {
     display: none;
+  }
+
+  .activity-bar__stack,
+  .activity-bar__footer {
+    display: flex;
+    align-items: center;
+  }
+
+  .activity-bar__footer {
+    width: auto;
+    padding-top: 0;
+    padding-left: 10px;
+    border-top: 0;
+    border-left: 1px solid var(--border);
   }
 
   .sidebar,
