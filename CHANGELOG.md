@@ -16,7 +16,13 @@
 - metadata-first фильтрация по тегам
 - auto-reload при внешних изменениях vault
 - Obsidian-like compatibility layer для будущих плагинов
+- agent-facing local API v0 для connections, note search/read/write, backlinks, graph summary и workspace session
+- локальный MCP stdio adapter v0 поверх agent API для внешних tool-using ассистентов
+- aggregated agent context pack по нескольким connections для быстрого загрузочного контекста
+- MCP resources/prompts v0 с resource templates и prompts `project-context-bootstrap` / `adr-bootstrap`
 - тестовый контур для `storage`, `workspace` и `wiki`
+- отдельная `app memory`: global memory и workspace memory вне подключаемых `vault`/`notesRoot`
+- переключатель языка интерфейса `RU/EN` с локализацией основных экранов и статусов
 
 ### Changed
 
@@ -25,6 +31,7 @@
 - конфликты названий больше не приводят к автоматическому добавлению `2`, вместо этого показывается ошибка
 - backlinks в preview ужаты и перестроены в компактный контекстный блок
 - список заметок больше не ограничен одной папкой, а строится как grouped view по всему vault
+- память приложения вынесена в отдельный app-owned storage и больше не требует смешивать operational memory с пользовательскими markdown notes
 
 ### Fixed
 

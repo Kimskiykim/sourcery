@@ -21,6 +21,8 @@ Sourcery — минимальный веб-клон Obsidian с TypeScript и х
 - встроенный Node API для чтения и записи заметок
 - автообновление при внешних изменениях markdown-файлов
 - best-effort сохранение при закрытии вкладки
+- отдельная `app memory` вне подключаемых `vault` и `notesRoot`
+- переключение интерфейса между русским и английским языком
 - исходники в `src/app.ts` и `src/server.ts`
 - Obsidian-like compatibility layer для будущих плагинов и интеграций
 
@@ -33,6 +35,7 @@ npm start
 ```
 
 После этого откройте `http://127.0.0.1:4173`.
+Язык интерфейса переключается кнопкой `RU/EN` в верхней панели.
 
 ## Tests
 
@@ -46,10 +49,34 @@ npm test
 - `src/core/workspace/*`
 - `src/core/wiki/*`
 
+## AI Assistants
+
+Проект уже подготовлен для работы с кодовыми ассистентами:
+
+- `AGENTS.md`:
+  нейтральные инструкции для Codex, Claude Code, Cursor и других агентных инструментов
+- `AGENT_INTEGRATION.md`:
+  onboarding для внешних кодовых агентов и MCP/HTTP-интеграции с Sourcery
+- `.github/copilot-instructions.md`:
+  инструкции для GitHub Copilot
+- `CLAUDE.md`:
+  отдельный onboarding-файл для Claude Code
+
+Быстрый workflow для ассистента:
+
+```bash
+npm install
+npm test
+npm start
+```
+
+Для безопасных изменений ассистенту стоит сначала читать `README.md`, `AGENTS.md` и `DEVELOPMENT_GUIDELINES.md`.
+
 ## Как это работает
 
 - `src/server.ts` поднимает локальный HTTP-сервер
 - заметки лежат в папке `vault/` как отдельные `.md` файлы
+- память приложения хранится локально в `.obsidian-lite/memory/` и не смешивается с `vault`
 - фронтенд работает через API `/api/notes`
 - браузерный runtime собирается в `dist/app.js`
 
@@ -57,6 +84,8 @@ npm test
 
 - `src/core/storage/*`:
   markdown storage layer, source of truth в `.md` файлах
+- `src/core/memory/*`:
+  app-owned memory layer для global/workspace memory вне подключённых markdown roots
 - `src/core/workspace/*`:
   workspace operations и transport-контракты
 - `src/core/wiki/*`:
@@ -68,6 +97,7 @@ npm test
 
 Смысл разделения такой:
 
+- `App Memory` отвечает за локальную память самого приложения и пользователя вне knowledge graph
 - `Workspace SDK` отвечает за рабочее окружение редактора
 - `Wiki SDK` отвечает за knowledge-layer
 - `compat/obsidian` даёт похожий на Obsidian surface API, не делая проект зависимым от их внутренних реализаций

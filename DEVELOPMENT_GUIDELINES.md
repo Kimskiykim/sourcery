@@ -111,6 +111,17 @@
 - нельзя строить core вокруг случайных ограничений compat-слоя
 - полная plugin compatibility не обещается без явного подтверждения
 
+### 7. Agent Write Policy
+
+На текущем этапе Sourcery не является authority по filesystem permissions для внешнего агента.
+
+Правила:
+- source of truth для knowledge-layer остаются markdown-файлы в подключённом `vault` или `notesRoot`
+- если агент уже имеет runtime-доступ к разрешённой markdown-папке, он может менять `.md` напрямую
+- Sourcery должен корректно подхватывать такие внешние изменения через watcher/revision-механизм
+- write scope агента должен ограничиваться sandbox/runtime permissions, а не только UI или prompt-инструкциями
+- отдельная permission system для внешних write-доступов вне локально разрешённой markdown-папки пока не вводится
+
 ## Definition of Done
 
 Изменение считается завершённым, если:

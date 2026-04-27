@@ -11,6 +11,8 @@
 - есть локальный Node API
 - есть базовый SDK-слой для работы с markdown vault
 - есть wikilinks и базовый note management
+- есть desktop-local workspace session и typed tabs contract v0
+- есть connection-aware backend foundation для нескольких markdown roots
 
 ## Целевая архитектура
 
@@ -36,6 +38,21 @@
 - layout state: sidebar, editor, preview, split
 - workspace events
 - API для UI и будущих расширений
+
+### 2.5. External Workspace Connections
+
+Это слой подключения внешних источников знаний и кода без установки самого приложения внутрь целевого репозитория.
+
+Задачи:
+- закрепить `WorkspaceConnection` как основной контракт подключения
+- поддержать `code repo`, `markdown vault`, `docs-only folder`
+- поддержать сценарий `codeRoot + отдельный notesRoot`
+- хранить session state, tabs, connection registry локально в приложении, а не в подключённом repo
+- сохранить markdown-файлы source of truth в подключённых папках
+- ввести стабильный `NoteRef` / `FolderRef` поверх `connectionId`
+
+Критерий готовности:
+- приложение работает как отдельный desktop-layer и подключается к внешним repo/vaults без копирования собственного runtime в них
 
 ### 3. Wiki SDK
 
@@ -140,7 +157,37 @@
 Критерий готовности:
 - заметки легко находить и связывать без ручного перебора
 
-### Этап 6. Automation and LLM Integration
+### Этап 6. Desktop Connections
+
+Цель: превратить single-vault prototype в desktop workspace, который подключает внешние repo и markdown roots.
+
+Задачи:
+- завершить модель `WorkspaceConnection`
+- развести `codeRoot` и `notesRoot` в typed contract
+- поддержать существующие markdown vaults и docs folders как подключаемые sources
+- поддержать code repo с markdown внутри и code repo с отдельной папкой заметок
+- стабилизировать local persistence для connections и workspace session
+- ввести aggregated listing/search поверх нескольких connections
+
+Критерий готовности:
+- пользователь может подключить внешний repo и/или соседнюю папку заметок, а приложение работает с ними как с единым workspace без размещения своего кода внутри этих папок
+
+### Этап 7. Agent Integration
+
+Цель: сделать продукт usable как knowledge/workspace surface для внешних AI-агентов и coding assistants.
+
+Задачи:
+- дать стабильный локальный typed API для note/folder/workspace операций
+- подготовить agent-facing tool surface или MCP-слой
+- поддержать `list/read/create/update/search` для markdown-notes по `connectionId`
+- поддержать graph, backlinks, workspace tabs/session и revision state как agent tools
+- сделать операции идемпотентными и безопасными для внешнего orchestrator-а
+- зафиксировать сценарий, где агент имеет доступ и к codebase, и к Sourcery как knowledge server
+
+Критерий готовности:
+- внешний агент может подключиться к локальному продукту, читать и обновлять markdown knowledge base, не требуя размещения приложения внутри целевого repo
+
+### Этап 8. Automation and LLM Integration
 
 Цель: превратить wiki в рабочую память для LLM.
 
@@ -154,7 +201,7 @@
 Критерий готовности:
 - LLM может безопасно поддерживать wiki как промежуточный артефакт
 
-### Этап 7. Extension Model
+### Этап 9. Extension Model
 
 Цель: сделать систему расширяемой без переписывания ядра.
 
@@ -175,8 +222,10 @@
 1. Stabilize Core
 2. Extract Workspace SDK
 3. Extract Wiki SDK
-4. Add Karpathy structure: `raw/`, `index.md`, `log.md`, `SCHEMA.md`
-5. Add search and backlinks
+4. Desktop Connections
+5. Agent Integration
+6. Add Karpathy structure: `raw/`, `index.md`, `log.md`, `SCHEMA.md`
+7. Add search and backlinks
 
 ## Чего не делать сейчас
 
@@ -184,6 +233,7 @@
 - не делать heavy desktop shell раньше времени
 - не пытаться повторить весь Obsidian UI до появления устойчивого core
 - не смешивать workspace-логику и wiki-логику в один модуль
+- не встраивать runtime приложения в каждый целевой repo; repo и vault должны подключаться как внешние sources
 
 ## Ближайший практический milestone
 
@@ -197,3 +247,16 @@ Milestone A: reliable local markdown workspace.
 - минимальные тесты на storage и API
 
 После этого уже можно переходить к knowledge-layer, а не чинить базовую редакторную механику на каждом шаге.
+
+## Ближайший agent-facing milestone
+
+Milestone B: desktop connections + agent-ready workspace API.
+
+Что должно войти:
+- `WorkspaceConnection` с `codeRoot` и optional `notesRoot`
+- подключение внешнего repo без копирования туда Sourcery
+- создание и обновление `.md` заметок в подключённой notes-папке
+- typed `NoteRef` / `FolderRef`
+- локальный agent-facing API или MCP surface для notes, search, graph, tabs
+
+После этого продукт можно использовать как отдельный knowledge server для Codex, Claude Code и других tool-using агентов.
