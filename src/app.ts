@@ -312,6 +312,10 @@ const TITLE_SAVE_DEBOUNCE_MS = 900;
 const WORKSPACE_POLL_MS = 2000;
 const GRAPH_VIEWBOX_WIDTH = 1000;
 const GRAPH_VIEWBOX_HEIGHT = 680;
+const GRAPH_VIEWBOX_CENTER_X = GRAPH_VIEWBOX_WIDTH / 2;
+const GRAPH_VIEWBOX_CENTER_Y = GRAPH_VIEWBOX_HEIGHT / 2;
+const DENSE_GRAPH_NODE_THRESHOLD = 90;
+const DENSE_GRAPH_ORPHAN_THRESHOLD = 48;
 const DEFAULT_EXPLORER_WIDTH = 292;
 const MIN_EXPLORER_WIDTH = 248;
 const MAX_EXPLORER_WIDTH = 420;
@@ -321,6 +325,24 @@ const LOCALE_STORAGE_KEY = "sourcery:locale";
 const ACTIVE_CONNECTION_STORAGE_KEY = "sourcery:active-connection";
 const apiClient = new SourceryApiClient({ getActiveConnectionId });
 const wiki = new WikiSDK();
+
+type GraphPoint = { x: number; y: number };
+type GraphLayoutBounds = {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+};
+type GraphLayoutResult = {
+  positions: Map<string, GraphPoint>;
+  bounds: GraphLayoutBounds;
+  dense: boolean;
+};
+
+let graphLayoutCache: {
+  key: string;
+  result: GraphLayoutResult;
+} | null = null;
 const TRANSLATIONS: Record<Locale, Record<string, string>> = {
   ru: {
     "app.title": "Sourcery",
@@ -2122,8 +2144,8 @@ function bindEvents(): void {
       return;
     }
 
-    state.graph.panX += (deltaX * GRAPH_VIEWBOX_WIDTH) / rect.width;
-    state.graph.panY += (deltaY * GRAPH_VIEWBOX_HEIGHT) / rect.height;
+    state.graph.panX += (deltaX * GRAPH_VIEWBOX_WIDTH) / (rect.width * state.graph.zoom);
+    state.graph.panY += (deltaY * GRAPH_VIEWBOX_HEIGHT) / (rect.height * state.graph.zoom);
     renderGraphCanvas();
   });
 
@@ -2160,7 +2182,7 @@ function bindEvents(): void {
     event.preventDefault();
     closeGraphNodeMenu();
     const direction = event.deltaY > 0 ? -1 : 1;
-    const nextZoom = clamp(state.graph.zoom + direction * 0.12, 0.45, 2.6);
+    const nextZoom = clamp(state.graph.zoom + direction * 0.12, 0.18, 2.8);
     if (nextZoom === state.graph.zoom) {
       return;
     }
@@ -4283,18 +4305,21 @@ function renderGraphCanvas(): void {
   const pathHighlights = getGraphPathHighlights(state.graph.path);
   const colorState = getGraphColorState();
   if (!snapshot) {
+    svg.classList.remove("is-dense");
     elements.graphEmptyState.hidden = false;
     elements.graphEmptyState.textContent = state.graph.error ?? t("graph.loadingNotStarted");
     return;
   }
 
   if (state.graph.loading && snapshot.nodes.length === 0) {
+    svg.classList.remove("is-dense");
     elements.graphEmptyState.hidden = false;
     elements.graphEmptyState.textContent = t("graph.loading");
     return;
   }
 
   if (snapshot.nodes.length === 0) {
+    svg.classList.remove("is-dense");
     elements.graphEmptyState.hidden = false;
     elements.graphEmptyState.textContent = state.graph.error ?? t("graph.noData");
     return;
@@ -4308,12 +4333,15 @@ function renderGraphCanvas(): void {
     state.graph.selectedNodeId = selectedNodeId;
   }
   const selectionHighlights = getGraphSelectionHighlights(snapshot, selectedNodeId);
-  const positions = getGraphLayoutPositions();
-  if (!positions) {
+  const layout = getGraphLayoutResult();
+  if (!layout) {
     elements.graphEmptyState.hidden = false;
     elements.graphEmptyState.textContent = state.graph.error ?? t("graph.loadingNotStarted");
+    svg.classList.remove("is-dense");
     return;
   }
+  svg.classList.toggle("is-dense", layout.dense);
+  const positions = layout.positions;
 
   const namespace = "http://www.w3.org/2000/svg";
   const viewport = document.createElementNS(namespace, "g");
@@ -4402,7 +4430,11 @@ function renderGraphCanvas(): void {
     });
 
     const circle = document.createElementNS(namespace, "circle");
-    circle.setAttribute("r", String(getGraphNodeRadius(node)));
+    const title = document.createElementNS(namespace, "title");
+    title.textContent = node.type === "tag" ? `#${node.tag ?? node.label}` : node.label;
+    group.append(title);
+
+    circle.setAttribute("r", String(getGraphNodeRadius(node, snapshot)));
     const nodeColor = colorState?.nodeColors.get(node.noteId ?? node.id);
     if (nodeColor) {
       circle.style.setProperty("--graph-node-fill", nodeColor.fill);
@@ -4426,24 +4458,27 @@ function renderGraphCanvas(): void {
     );
     group.append(circle);
 
-    const label = document.createElementNS(namespace, "text");
-    label.setAttribute("y", String(getGraphNodeRadius(node) + 16));
-    label.setAttribute(
-      "class",
-      [
-        "graph-label",
-        node.type === "dangling" ? "graph-label--muted" : "",
-        selectionHighlights.selectedNodeId === node.id ? "is-selected" : "",
-        selectionHighlights.relatedNodeIds.has(node.id) ? "is-related" : "",
-        selectionHighlights.hasSelection
-          && selectionHighlights.selectedNodeId !== node.id
-          && !selectionHighlights.relatedNodeIds.has(node.id)
-          ? "is-dimmed"
-          : "",
-      ].filter(Boolean).join(" ")
-    );
-    label.textContent = truncateLabel(node.type === "tag" ? `#${node.tag ?? node.label}` : node.label, 16);
-    group.append(label);
+    if (shouldShowGraphLabel(node, snapshot, layout, selectionHighlights, pathHighlights)) {
+      const label = document.createElementNS(namespace, "text");
+      label.setAttribute("y", String(getGraphNodeRadius(node, snapshot) + 16));
+      label.setAttribute(
+        "class",
+        [
+          "graph-label",
+          node.type === "dangling" ? "graph-label--muted" : "",
+          selectionHighlights.selectedNodeId === node.id ? "is-selected" : "",
+          selectionHighlights.relatedNodeIds.has(node.id) ? "is-related" : "",
+          selectionHighlights.hasSelection
+            && selectionHighlights.selectedNodeId !== node.id
+            && !selectionHighlights.relatedNodeIds.has(node.id)
+            ? "is-dimmed"
+            : "",
+        ].filter(Boolean).join(" ")
+      );
+      const labelLength = layout.dense && !selectionHighlights.relatedNodeIds.has(node.id) ? 13 : 16;
+      label.textContent = truncateLabel(node.type === "tag" ? `#${node.tag ?? node.label}` : node.label, labelLength);
+      group.append(label);
+    }
 
     viewport.append(group);
   });
@@ -4451,12 +4486,23 @@ function renderGraphCanvas(): void {
   svg.append(viewport);
 }
 
-function getGraphLayoutPositions(): Map<string, { x: number; y: number }> | null {
+function getGraphLayoutPositions(): Map<string, GraphPoint> | null {
+  return getGraphLayoutResult()?.positions ?? null;
+}
+
+function getGraphLayoutResult(): GraphLayoutResult | null {
   if (!state.graph.snapshot) {
     return null;
   }
 
-  return buildGraphLayout(state.graph.snapshot, state.vault.selectedNoteId, state.graph.mode);
+  const key = getGraphLayoutCacheKey(state.graph.snapshot, state.vault.selectedNoteId, state.graph.mode);
+  if (graphLayoutCache?.key === key) {
+    return graphLayoutCache.result;
+  }
+
+  const result = buildGraphLayout(state.graph.snapshot, state.vault.selectedNoteId, state.graph.mode);
+  graphLayoutCache = { key, result };
+  return result;
 }
 
 function getGraphSelectionHighlights(
@@ -4498,36 +4544,23 @@ function getGraphSelectionHighlights(
 }
 
 function centerGraphViewport(): void {
-  const positions = getGraphLayoutPositions();
-  if (!positions || positions.size === 0) {
+  const layout = getGraphLayoutResult();
+  if (!layout || layout.positions.size === 0) {
     resetGraphViewport();
     return;
   }
 
-  let minX = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-
-  positions.forEach((position) => {
-    minX = Math.min(minX, position.x);
-    maxX = Math.max(maxX, position.x);
-    minY = Math.min(minY, position.y);
-    maxY = Math.max(maxY, position.y);
-  });
-
-  if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+  const { minX, maxX, minY, maxY } = layout.bounds;
+  if (!isValidGraphBounds(layout.bounds)) {
     resetGraphViewport();
     return;
   }
 
   const contentCenterX = (minX + maxX) / 2;
   const contentCenterY = (minY + maxY) / 2;
-  const viewportCenterX = GRAPH_VIEWBOX_WIDTH / 2;
-  const viewportCenterY = GRAPH_VIEWBOX_HEIGHT / 2;
 
-  state.graph.panX = viewportCenterX - contentCenterX * state.graph.zoom;
-  state.graph.panY = viewportCenterY - contentCenterY * state.graph.zoom;
+  state.graph.panX = GRAPH_VIEWBOX_CENTER_X - contentCenterX * state.graph.zoom;
+  state.graph.panY = GRAPH_VIEWBOX_CENTER_Y - contentCenterY * state.graph.zoom;
 }
 
 function renderGraphInsightList(
@@ -7028,12 +7061,12 @@ function buildGraphLayout(
   snapshot: GraphSnapshot,
   selectedNoteId: string | null,
   mode: GraphMode
-): Map<string, { x: number; y: number }> {
-  const positions = new Map<string, { x: number; y: number }>();
-  const centerX = 500;
-  const centerY = 320;
-  const viewportWidth = GRAPH_VIEWBOX_WIDTH;
-  const viewportHeight = GRAPH_VIEWBOX_HEIGHT;
+): GraphLayoutResult {
+  const positions = new Map<string, GraphPoint>();
+  const dense = isDenseGraph(snapshot);
+  const world = getGraphWorldSize(snapshot, mode, dense);
+  const centerX = world.width / 2;
+  const centerY = dense && mode === "global" ? 310 : world.height / 2;
 
   const selectedNode = mode === "local" && selectedNoteId
     ? snapshot.nodes.find((node) => node.noteId === selectedNoteId)
@@ -7042,22 +7075,63 @@ function buildGraphLayout(
     positions.set(selectedNode.id, { x: centerX, y: centerY });
   }
 
-  const noteNodes = snapshot.nodes
+  const allNoteNodes = snapshot.nodes
     .filter((node) => node.type === "note" && node.id !== selectedNode?.id)
     .sort((left, right) => right.size - left.size || left.label.localeCompare(right.label, "en"));
+  const orphanNoteNodes = dense && mode === "global"
+    ? allNoteNodes.filter(isGraphOrphanNode)
+    : [];
+  const noteNodes = dense && mode === "global"
+    ? allNoteNodes.filter((node) => !isGraphOrphanNode(node))
+    : allNoteNodes;
   const tagNodes = snapshot.nodes
     .filter((node) => node.type === "tag")
-    .sort((left, right) => left.label.localeCompare(right.label, "en"));
+    .sort((left, right) => right.degree - left.degree || left.label.localeCompare(right.label, "en"));
   const danglingNodes = snapshot.nodes
     .filter((node) => node.type === "dangling")
     .sort((left, right) => left.label.localeCompare(right.label, "en"));
 
-  placeNodesOnRings(positions, noteNodes, centerX, centerY, mode === "local" ? 170 : 120, 78, 10, -Math.PI / 2);
-  placeNodesOnRings(positions, tagNodes, centerX, centerY, mode === "local" ? 300 : 330, 64, 14, -Math.PI / 2 + 0.16);
-  placeNodesOnRings(positions, danglingNodes, centerX, centerY, mode === "local" ? 390 : 420, 56, 16, Math.PI / 2);
+  placeNodesOnRings(
+    positions,
+    noteNodes,
+    centerX,
+    centerY,
+    mode === "local" ? 170 : dense ? 145 : 120,
+    dense ? 88 : 78,
+    dense ? 16 : 10,
+    -Math.PI / 2
+  );
+  placeNodesOnRings(
+    positions,
+    tagNodes,
+    centerX,
+    centerY,
+    mode === "local" ? 300 : dense ? 360 : 330,
+    dense ? 76 : 64,
+    dense ? 18 : 14,
+    -Math.PI / 2 + 0.16
+  );
+  placeNodesOnRings(
+    positions,
+    danglingNodes,
+    centerX,
+    centerY,
+    mode === "local" ? 390 : dense ? 470 : 420,
+    62,
+    dense ? 18 : 16,
+    Math.PI / 2
+  );
+
+  if (orphanNoteNodes.length > 0) {
+    placeDenseGraphOrphans(positions, orphanNoteNodes, world, centerY);
+  }
 
   if (snapshot.nodes.length <= 1) {
-    return positions;
+    return {
+      positions,
+      bounds: getGraphLayoutBounds(positions, snapshot),
+      dense,
+    };
   }
 
   type SimPoint = {
@@ -7080,34 +7154,109 @@ function buildGraphLayout(
       y: start.y,
       vx: 0,
       vy: 0,
-      fixed: node.id === selectedNode?.id,
+      fixed: node.id === selectedNode?.id || (dense && mode === "global" && isGraphOrphanNode(node)),
       targetX: start.x,
       targetY: start.y,
-      radius: getGraphNodeRadius(node),
+      radius: getGraphNodeRadius(node, snapshot),
       node,
     });
   });
 
-  const iterations = Math.min(84, 42 + snapshot.nodes.length * 2);
+  const movingNodeCount = [...simPoints.values()].filter((point) => !point.fixed).length;
+  const iterations = dense
+    ? Math.min(68, 34 + movingNodeCount * 2)
+    : Math.min(84, 42 + snapshot.nodes.length * 2);
   for (let iteration = 0; iteration < iterations; iteration += 1) {
-    applyGraphRepulsion(simPoints, snapshot.nodes.length > 48 ? 2800 : 3600);
+    applyGraphRepulsion(simPoints, dense ? 2400 : snapshot.nodes.length > 48 ? 2800 : 3600);
     applyGraphCollisions(simPoints);
     applyGraphEdgeSprings(simPoints, snapshot.edges);
     applyGraphAnchors(simPoints, mode, centerX, centerY, selectedNode?.id ?? null);
-    integrateGraphPositions(simPoints, viewportWidth, viewportHeight);
+    integrateGraphPositions(simPoints, world.width, world.height);
   }
 
   simPoints.forEach((point, nodeId) => {
     positions.set(nodeId, { x: point.x, y: point.y });
   });
 
-  return positions;
+  return {
+    positions,
+    bounds: getGraphLayoutBounds(positions, snapshot),
+    dense,
+  };
 }
 
 void bootstrap();
 
+function isDenseGraph(snapshot: GraphSnapshot): boolean {
+  return snapshot.nodes.length >= DENSE_GRAPH_NODE_THRESHOLD
+    || snapshot.stats.orphanNoteCount >= DENSE_GRAPH_ORPHAN_THRESHOLD;
+}
+
+function getGraphWorldSize(
+  snapshot: GraphSnapshot,
+  mode: GraphMode,
+  dense: boolean
+): { width: number; height: number } {
+  if (!dense || mode === "local") {
+    return {
+      width: GRAPH_VIEWBOX_WIDTH,
+      height: GRAPH_VIEWBOX_HEIGHT,
+    };
+  }
+
+  const orphanCount = snapshot.nodes.filter(isGraphOrphanNode).length;
+  const connectedCount = Math.max(1, snapshot.nodes.length - orphanCount);
+  const columns = Math.max(8, Math.ceil(Math.sqrt(Math.max(orphanCount, 1)) * 1.35));
+  const rows = Math.ceil(orphanCount / columns);
+  return {
+    width: Math.max(GRAPH_VIEWBOX_WIDTH, columns * 126 + 180, connectedCount * 18 + 760),
+    height: Math.max(GRAPH_VIEWBOX_HEIGHT, 720 + rows * 74),
+  };
+}
+
+function isGraphOrphanNode(node: GraphNode): boolean {
+  return node.type === "note" && (node.orphan === true || node.degree === 0);
+}
+
+function placeDenseGraphOrphans(
+  positions: Map<string, GraphPoint>,
+  nodes: GraphNode[],
+  world: { width: number; height: number },
+  centerY: number
+): void {
+  if (nodes.length === 0) {
+    return;
+  }
+
+  const columns = Math.max(8, Math.floor((world.width - 180) / 126));
+  const startX = (world.width - Math.min(nodes.length, columns) * 126) / 2 + 63;
+  const startY = Math.min(world.height - 240, centerY + 360);
+  placeNodesInGrid(positions, nodes, startX, startY, columns, 126, 74);
+}
+
+function placeNodesInGrid(
+  positions: Map<string, GraphPoint>,
+  nodes: GraphNode[],
+  startX: number,
+  startY: number,
+  columns: number,
+  columnGap: number,
+  rowGap: number
+): void {
+  nodes
+    .sort((left, right) => left.folderPath?.localeCompare(right.folderPath ?? "", "en") || left.label.localeCompare(right.label, "en"))
+    .forEach((node, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      positions.set(node.id, {
+        x: startX + column * columnGap + seededDirection(node.id, "orphan", "x") * 5,
+        y: startY + row * rowGap + seededDirection(node.id, "orphan", "y") * 4,
+      });
+    });
+}
+
 function placeNodesOnRings(
-  positions: Map<string, { x: number; y: number }>,
+  positions: Map<string, GraphPoint>,
   nodes: GraphNode[],
   centerX: number,
   centerY: number,
@@ -7135,6 +7284,88 @@ function placeNodesOnRings(
   }
 }
 
+function getGraphLayoutBounds(
+  positions: Map<string, GraphPoint>,
+  snapshot: GraphSnapshot
+): GraphLayoutBounds {
+  const nodeById = new Map(snapshot.nodes.map((node) => [node.id, node]));
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  positions.forEach((position, nodeId) => {
+    const node = nodeById.get(nodeId);
+    const radius = node ? getGraphNodeRadius(node, snapshot) + 22 : 24;
+    minX = Math.min(minX, position.x - radius);
+    maxX = Math.max(maxX, position.x + radius);
+    minY = Math.min(minY, position.y - radius);
+    maxY = Math.max(maxY, position.y + radius + 16);
+  });
+
+  return { minX, maxX, minY, maxY };
+}
+
+function isValidGraphBounds(bounds: GraphLayoutBounds): boolean {
+  return Number.isFinite(bounds.minX)
+    && Number.isFinite(bounds.maxX)
+    && Number.isFinite(bounds.minY)
+    && Number.isFinite(bounds.maxY)
+    && bounds.maxX > bounds.minX
+    && bounds.maxY > bounds.minY;
+}
+
+function getGraphLayoutCacheKey(
+  snapshot: GraphSnapshot,
+  selectedNoteId: string | null,
+  mode: GraphMode
+): string {
+  const nodeKey = snapshot.nodes
+    .map((node) => `${node.id}:${node.type}:${node.degree}:${node.size}:${node.orphan ? "o" : ""}`)
+    .join("|");
+  const edgeKey = snapshot.edges.map((edge) => `${edge.id}:${edge.weight}`).join("|");
+  return [
+    mode,
+    selectedNoteId ?? "",
+    snapshot.nodes.length,
+    snapshot.edges.length,
+    snapshot.stats.noteCount,
+    snapshot.stats.orphanNoteCount,
+    nodeKey,
+    edgeKey,
+  ].join("::");
+}
+
+function shouldShowGraphLabel(
+  node: GraphNode,
+  snapshot: GraphSnapshot,
+  layout: GraphLayoutResult,
+  selectionHighlights: ReturnType<typeof getGraphSelectionHighlights>,
+  pathHighlights: ReturnType<typeof getGraphPathHighlights>
+): boolean {
+  if (!layout.dense) {
+    return true;
+  }
+
+  if (selectionHighlights.selectedNodeId === node.id || selectionHighlights.relatedNodeIds.has(node.id)) {
+    return true;
+  }
+
+  if (node.noteId && (node.noteId === state.vault.selectedNoteId || pathHighlights.nodeIds.has(node.noteId))) {
+    return true;
+  }
+
+  if (node.type === "tag") {
+    return node.degree >= 2 || snapshot.stats.tagCount <= 8;
+  }
+
+  if (node.type === "dangling") {
+    return false;
+  }
+
+  return node.degree > 0 || node.size >= Math.max(8, snapshot.stats.maxNodeSize - 2);
+}
+
 function applyGraphRepulsion(
   simPoints: Map<string, {
     x: number;
@@ -7155,6 +7386,10 @@ function applyGraphRepulsion(
     for (let inner = index + 1; inner < points.length; inner += 1) {
       const left = points[index];
       const right = points[inner];
+      if (left.fixed && right.fixed) {
+        continue;
+      }
+
       let dx = right.x - left.x;
       let dy = right.y - left.y;
       let distanceSq = dx * dx + dy * dy;
@@ -7202,10 +7437,14 @@ function applyGraphCollisions(
     for (let inner = index + 1; inner < points.length; inner += 1) {
       const left = points[index];
       const right = points[inner];
+      if (left.fixed && right.fixed) {
+        continue;
+      }
+
       let dx = right.x - left.x;
       let dy = right.y - left.y;
       let distance = Math.hypot(dx, dy);
-      const minimum = left.radius + right.radius + 18;
+      const minimum = left.radius + right.radius + (left.node.type === "note" && right.node.type === "note" ? 16 : 18);
 
       if (distance === 0) {
         dx = seededDirection(left.node.id, right.node.id, "x");
@@ -7368,12 +7607,19 @@ function seededDirection(leftId: string, rightId: string, axis: "x" | "y"): numb
   return normalized === 0 ? 0.001 : normalized;
 }
 
-function getGraphNodeRadius(node: GraphNode): number {
+function getGraphNodeRadius(node: GraphNode, snapshot: GraphSnapshot | null = state.graph.snapshot): number {
+  const dense = snapshot ? isDenseGraph(snapshot) : false;
   if (node.type === "note") {
-    return Math.max(10, Math.min(26, 9 + node.size * 1.35));
+    if (dense && isGraphOrphanNode(node)) {
+      return 6;
+    }
+
+    const minRadius = dense ? 8 : 10;
+    const maxRadius = dense ? 21 : 26;
+    return Math.max(minRadius, Math.min(maxRadius, 8 + node.size * (dense ? 1.05 : 1.35)));
   }
 
-  return node.type === "tag" ? 9 : 8;
+  return node.type === "tag" ? dense ? 7 : 9 : dense ? 6 : 8;
 }
 
 function truncateLabel(value: string, maxLength: number): string {
@@ -7385,9 +7631,23 @@ function truncateLabel(value: string, maxLength: number): string {
 }
 
 function resetGraphViewport(): void {
-  state.graph.panX = 0;
-  state.graph.panY = 0;
-  state.graph.zoom = 1;
+  const layout = getGraphLayoutResult();
+  if (!layout || !isValidGraphBounds(layout.bounds)) {
+    state.graph.panX = 0;
+    state.graph.panY = 0;
+    state.graph.zoom = 1;
+    return;
+  }
+
+  const padding = layout.dense ? 72 : 56;
+  const contentWidth = Math.max(1, layout.bounds.maxX - layout.bounds.minX + padding * 2);
+  const contentHeight = Math.max(1, layout.bounds.maxY - layout.bounds.minY + padding * 2);
+  const fitZoom = Math.min(
+    (GRAPH_VIEWBOX_WIDTH - padding) / contentWidth,
+    (GRAPH_VIEWBOX_HEIGHT - padding) / contentHeight
+  );
+  state.graph.zoom = clamp(fitZoom, 0.18, layout.dense ? 0.92 : 1.1);
+  centerGraphViewport();
 }
 
 function clamp(value: number, min: number, max: number): number {

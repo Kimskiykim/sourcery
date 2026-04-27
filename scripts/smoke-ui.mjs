@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -10,10 +10,12 @@ const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || String(4300 + Math.floor(Math.random() * 1000)));
 const baseUrl = `http://${host}:${port}`;
 const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sourcery-smoke-"));
+const vaultDir = path.join(tempRoot, "vault");
+await seedSmokeVault(vaultDir);
 const context = createAppContext({
   rootDir: process.cwd(),
   distDir: path.join(process.cwd(), "dist"),
-  vaultDir: path.join(tempRoot, "vault"),
+  vaultDir,
   appStateDir: path.join(tempRoot, ".obsidian-lite"),
 });
 
@@ -102,6 +104,7 @@ async function runViewportSmoke(browser, viewport, label, options) {
     await page.getByTestId("activity-graph").click();
     await expectVisible(page.getByTestId("graph-pane"), `${label}: graph pane`);
     await expectText(page.locator("#graph-stats"), /граф|graph|замет|note/i, `${label}: graph stats`);
+    await expectLargeGraphCanvas(page, `${label}: large graph canvas`);
 
     await page.getByTestId("activity-memory").click();
     await expectVisible(page.getByTestId("memory-layout"), `${label}: memory layout`);
@@ -116,6 +119,101 @@ async function runViewportSmoke(browser, viewport, label, options) {
     }
   } finally {
     await pageContext.close();
+  }
+}
+
+async function seedSmokeVault(vaultDir) {
+  await mkdir(path.join(vaultDir, "archive"), { recursive: true });
+  await mkdir(path.join(vaultDir, "projects"), { recursive: true });
+  await writeFile(
+    path.join(vaultDir, "Welcome.md"),
+    "# Welcome\n\nSee [[Ideas]] and [[projects/Linked 01]].\n",
+    "utf8"
+  );
+  await writeFile(
+    path.join(vaultDir, "Ideas.md"),
+    "# Ideas\n\nBack to [[Welcome]].\n",
+    "utf8"
+  );
+
+  const writes = [];
+  for (let index = 1; index <= 14; index += 1) {
+    const padded = String(index).padStart(2, "0");
+    writes.push(writeFile(
+      path.join(vaultDir, "projects", `Linked ${padded}.md`),
+      `# Linked ${padded}\n\nSee [[Welcome]].\n`,
+      "utf8"
+    ));
+  }
+
+  for (let index = 1; index <= 112; index += 1) {
+    const padded = String(index).padStart(3, "0");
+    writes.push(writeFile(
+      path.join(vaultDir, "archive", `Orphan ${padded}.md`),
+      `# Orphan ${padded}\n\nStandalone smoke note.\n`,
+      "utf8"
+    ));
+  }
+
+  await Promise.all(writes);
+}
+
+async function expectLargeGraphCanvas(page, label) {
+  await page.locator("#graph-canvas.is-dense .graph-node").first().waitFor({ state: "visible", timeout: 5_000 });
+  const metrics = await page.evaluate(() => {
+    const svg = document.querySelector("#graph-canvas");
+    const viewport = svg?.querySelector("g");
+    const nodes = [...(svg?.querySelectorAll(".graph-node") ?? [])];
+    const labels = [...(svg?.querySelectorAll(".graph-label") ?? [])];
+    const bbox = viewport instanceof SVGGraphicsElement ? viewport.getBBox() : null;
+    const matrix = viewport instanceof SVGGElement
+      ? viewport.transform.baseVal.consolidate()?.matrix ?? null
+      : null;
+    const corners = bbox && matrix
+      ? [
+        { x: bbox.x, y: bbox.y },
+        { x: bbox.x + bbox.width, y: bbox.y },
+        { x: bbox.x + bbox.width, y: bbox.y + bbox.height },
+        { x: bbox.x, y: bbox.y + bbox.height },
+      ].map((point) => ({
+        x: matrix.a * point.x + matrix.c * point.y + matrix.e,
+        y: matrix.b * point.x + matrix.d * point.y + matrix.f,
+      }))
+      : [];
+    const xs = corners.map((point) => point.x);
+    const ys = corners.map((point) => point.y);
+
+    return {
+      dense: svg?.classList.contains("is-dense") === true,
+      nodeCount: nodes.length,
+      labelCount: labels.length,
+      contentBounds: corners.length === 0
+        ? null
+        : {
+          minX: Math.min(...xs),
+          maxX: Math.max(...xs),
+          minY: Math.min(...ys),
+          maxY: Math.max(...ys),
+        },
+    };
+  });
+
+  if (!metrics.dense || metrics.nodeCount < 100) {
+    throw new Error(`${label} expected dense graph with at least 100 nodes, got ${JSON.stringify(metrics)}`);
+  }
+
+  if (
+    !metrics.contentBounds
+    || metrics.contentBounds.minX < -80
+    || metrics.contentBounds.maxX > 1080
+    || metrics.contentBounds.minY < -80
+    || metrics.contentBounds.maxY > 760
+  ) {
+    throw new Error(`${label} expected dense graph content to fit the SVG viewBox, got ${JSON.stringify(metrics)}`);
+  }
+
+  if (metrics.labelCount >= metrics.nodeCount * 0.55) {
+    throw new Error(`${label} expected dense graph labels to be reduced, got ${JSON.stringify(metrics)}`);
   }
 }
 

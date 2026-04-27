@@ -1927,10 +1927,11 @@ body.is-resizing-sidebar .sidebar-resizer::before {
   border-radius: 0;
   border: 0;
   background:
-    radial-gradient(circle at top left, rgba(var(--accent-rgb), 0.18), transparent 24%),
-    radial-gradient(circle at bottom right, rgba(200, 242, 255, 0.14), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 35%),
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.028), transparent 38%),
     transparent;
+  background-size: 44px 44px, 44px 44px, auto;
   overflow: hidden;
   box-shadow: none;
 }
@@ -2150,6 +2151,7 @@ body.is-resizing-sidebar .sidebar-resizer::before {
   stroke: rgba(255, 255, 255, 0.16);
   stroke-width: 1.4;
   transition: 160ms ease;
+  vector-effect: non-scaling-stroke;
 }
 
 .graph-edge--tag {
@@ -2173,12 +2175,25 @@ body.is-resizing-sidebar .sidebar-resizer::before {
 
 .graph-node {
   transition: 160ms ease;
+  vector-effect: non-scaling-stroke;
 }
 
 .graph-node--note {
   fill: var(--graph-node-fill, #f1ede4);
   stroke: var(--graph-node-stroke, rgba(20, 20, 20, 0.6));
   stroke-width: 2;
+}
+
+.graph-canvas.is-dense .graph-node--note {
+  fill-opacity: 0.88;
+}
+
+.graph-canvas.is-dense .graph-node--note[style] {
+  fill-opacity: 0.96;
+}
+
+.graph-canvas.is-dense .graph-edge {
+  stroke: rgba(255, 255, 255, 0.12);
 }
 
 .graph-node--note.is-active {
@@ -2237,6 +2252,14 @@ body.is-resizing-sidebar .sidebar-resizer::before {
   text-anchor: middle;
   pointer-events: none;
   transition: 160ms ease;
+  paint-order: stroke;
+  stroke: rgba(8, 12, 28, 0.82);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.graph-canvas.is-dense .graph-label {
+  font-size: 10px;
 }
 
 .graph-label--muted {
