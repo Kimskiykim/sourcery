@@ -27,6 +27,7 @@ type NoteViewMode = Exclude<ViewMode, "graph" | "memory">;
 type FolderVisibilityMode = "all" | "selected";
 type GraphMode = "global" | "local";
 type GraphColorMode = "none" | "folder" | "tag" | "cluster";
+type GraphLens = "all" | "connected-core" | "orphans" | "agent-context" | "tasks" | "decisions";
 type ConnectionPathField = "rootPath" | "codeRoot" | "notesRoot";
 type Locale = "ru" | "en";
 
@@ -49,6 +50,7 @@ interface NavigationEntry {
     folderScoped: boolean;
     existingFilesOnly: boolean;
     colorMode: GraphColorMode;
+    lens: GraphLens;
     sidebarCollapsed: boolean;
     selectedNodeId: string | null;
     panX: number;
@@ -144,6 +146,7 @@ interface State {
     folderScoped: boolean;
     existingFilesOnly: boolean;
     colorMode: GraphColorMode;
+    lens: GraphLens;
     sidebarCollapsed: boolean;
     snapshot: GraphSnapshot | null;
     clusters: GraphCluster[];
@@ -248,6 +251,7 @@ interface Elements {
   graphGlobalButton: HTMLButtonElement;
   graphLocalButton: HTMLButtonElement;
   graphColorModeButton: HTMLButtonElement;
+  graphLensButton: HTMLButtonElement;
   graphFolderScopeButton: HTMLButtonElement;
   graphExistingOnlyButton: HTMLButtonElement;
   graphCenterViewButton: HTMLButtonElement;
@@ -316,6 +320,14 @@ const GRAPH_VIEWBOX_CENTER_X = GRAPH_VIEWBOX_WIDTH / 2;
 const GRAPH_VIEWBOX_CENTER_Y = GRAPH_VIEWBOX_HEIGHT / 2;
 const DENSE_GRAPH_NODE_THRESHOLD = 90;
 const DENSE_GRAPH_ORPHAN_THRESHOLD = 48;
+const GRAPH_LENSES: GraphLens[] = [
+  "all",
+  "connected-core",
+  "orphans",
+  "agent-context",
+  "tasks",
+  "decisions",
+];
 const DEFAULT_EXPLORER_WIDTH = 292;
 const MIN_EXPLORER_WIDTH = 248;
 const MAX_EXPLORER_WIDTH = 420;
@@ -440,10 +452,19 @@ const TRANSLATIONS: Record<Locale, Record<string, string>> = {
     "graph.color.folder": "Папка",
     "graph.color.tag": "Тег",
     "graph.color.cluster": "Кластер",
+    "graph.lens": "Линза",
+    "graph.lens.all": "Все",
+    "graph.lens.connectedCore": "Связанное ядро",
+    "graph.lens.orphans": "Сироты",
+    "graph.lens.agentContext": "Agent context",
+    "graph.lens.tasks": "Задачи",
+    "graph.lens.decisions": "Решения",
+    "graph.lensVisible": "{visible} из {total} заметок",
     "graph.loading": "Загрузка графа…",
     "graph.loadingNotStarted": "Загрузка графа не начата",
     "graph.loadError": "Ошибка загрузки graph view",
     "graph.noData": "Нет данных графа для текущего scope",
+    "graph.noLensData": "Нет узлов для текущей линзы",
     "graph.chooseLocal": "Выберите заметку для локального графа",
     "graph.noRankedNotes": "Нет заметок с рангом",
     "graph.noHubNotes": "Нет hub-заметок",
@@ -738,10 +759,19 @@ const TRANSLATIONS: Record<Locale, Record<string, string>> = {
     "graph.color.folder": "Folder",
     "graph.color.tag": "Tag",
     "graph.color.cluster": "Cluster",
+    "graph.lens": "Lens",
+    "graph.lens.all": "All",
+    "graph.lens.connectedCore": "Connected core",
+    "graph.lens.orphans": "Orphans",
+    "graph.lens.agentContext": "Agent context",
+    "graph.lens.tasks": "Tasks",
+    "graph.lens.decisions": "Decisions",
+    "graph.lensVisible": "{visible} of {total} notes",
     "graph.loading": "Loading graph…",
     "graph.loadingNotStarted": "Graph loading not started",
     "graph.loadError": "Failed to load graph view",
     "graph.noData": "No graph data for the current scope",
+    "graph.noLensData": "No nodes for the current lens",
     "graph.chooseLocal": "Select a note for local graph",
     "graph.noRankedNotes": "No ranked notes",
     "graph.noHubNotes": "No hub notes",
@@ -991,6 +1021,7 @@ const state: State = {
     folderScoped: false,
     existingFilesOnly: false,
     colorMode: "none",
+    lens: "all",
     sidebarCollapsed: true,
     snapshot: null,
     clusters: [],
@@ -1095,6 +1126,7 @@ const elements: Elements = {
   graphGlobalButton: query<HTMLButtonElement>("#graph-global-button"),
   graphLocalButton: query<HTMLButtonElement>("#graph-local-button"),
   graphColorModeButton: query<HTMLButtonElement>("#graph-color-mode-button"),
+  graphLensButton: query<HTMLButtonElement>("#graph-lens-button"),
   graphFolderScopeButton: query<HTMLButtonElement>("#graph-folder-scope-button"),
   graphExistingOnlyButton: query<HTMLButtonElement>("#graph-existing-only-button"),
   graphCenterViewButton: query<HTMLButtonElement>("#graph-center-view-button"),
@@ -1317,6 +1349,7 @@ function captureNavigationEntry(): NavigationEntry {
       folderScoped: state.graph.folderScoped,
       existingFilesOnly: state.graph.existingFilesOnly,
       colorMode: state.graph.colorMode,
+      lens: state.graph.lens,
       sidebarCollapsed: state.graph.sidebarCollapsed,
       selectedNodeId: state.graph.selectedNodeId,
       panX: state.graph.panX,
@@ -1336,6 +1369,7 @@ function areNavigationEntriesEqual(left: NavigationEntry, right: NavigationEntry
     && left.graph.folderScoped === right.graph.folderScoped
     && left.graph.existingFilesOnly === right.graph.existingFilesOnly
     && left.graph.colorMode === right.graph.colorMode
+    && left.graph.lens === right.graph.lens
     && left.graph.sidebarCollapsed === right.graph.sidebarCollapsed
     && left.graph.selectedNodeId === right.graph.selectedNodeId
     && left.graph.panX === right.graph.panX
@@ -1401,6 +1435,7 @@ async function restoreNavigationEntry(entry: NavigationEntry): Promise<void> {
   state.graph.folderScoped = entry.graph.folderScoped;
   state.graph.existingFilesOnly = entry.graph.existingFilesOnly;
   state.graph.colorMode = entry.graph.colorMode;
+  state.graph.lens = entry.graph.lens;
   state.graph.sidebarCollapsed = entry.graph.sidebarCollapsed;
   state.graph.selectedNodeId = entry.graph.selectedNodeId;
   state.graph.panX = entry.graph.panX;
@@ -1560,6 +1595,13 @@ function bindEvents(): void {
 
   elements.graphColorModeButton.addEventListener("click", () => {
     state.graph.colorMode = getNextGraphColorMode(state.graph.colorMode);
+    renderGraphView();
+  });
+
+  elements.graphLensButton.addEventListener("click", () => {
+    state.graph.lens = getNextGraphLens(state.graph.lens);
+    state.graph.selectedNodeId = null;
+    resetGraphViewport();
     renderGraphView();
   });
 
@@ -2819,6 +2861,59 @@ function getGraphColorModeGlyph(mode: GraphColorMode): string {
   return "◌";
 }
 
+function getNextGraphLens(lens: GraphLens): GraphLens {
+  const index = GRAPH_LENSES.indexOf(lens);
+  return GRAPH_LENSES[(index + 1) % GRAPH_LENSES.length] ?? "all";
+}
+
+function getGraphLensLabel(lens: GraphLens): string {
+  if (lens === "connected-core") {
+    return t("graph.lens.connectedCore");
+  }
+
+  if (lens === "orphans") {
+    return t("graph.lens.orphans");
+  }
+
+  if (lens === "agent-context") {
+    return t("graph.lens.agentContext");
+  }
+
+  if (lens === "tasks") {
+    return t("graph.lens.tasks");
+  }
+
+  if (lens === "decisions") {
+    return t("graph.lens.decisions");
+  }
+
+  return t("graph.lens.all");
+}
+
+function getGraphLensGlyph(lens: GraphLens): string {
+  if (lens === "connected-core") {
+    return "◆";
+  }
+
+  if (lens === "orphans") {
+    return "○";
+  }
+
+  if (lens === "agent-context") {
+    return "⌂";
+  }
+
+  if (lens === "tasks") {
+    return "☑";
+  }
+
+  if (lens === "decisions") {
+    return "§";
+  }
+
+  return "◇";
+}
+
 function getViewModeLabel(view: ViewMode): string {
   if (view === "split") {
     return t("view.split");
@@ -4063,6 +4158,7 @@ function renderMemoryView(): void {
 function renderGraphView(): void {
   syncGraphPathSelection();
   elements.graphPane.dataset.sidebarCollapsed = String(state.graph.sidebarCollapsed);
+  elements.graphPane.dataset.lens = state.graph.lens;
   elements.graphGlobalButton.classList.toggle("is-active", state.graph.mode === "global");
   elements.graphLocalButton.classList.toggle("is-active", state.graph.mode === "local");
   elements.graphGlobalButton.title = t("graph.global");
@@ -4074,6 +4170,14 @@ function renderGraphView(): void {
   const graphColorModeGlyph = elements.graphColorModeButton.querySelector<HTMLElement>(".graph-toolbar-button__glyph");
   if (graphColorModeGlyph) {
     graphColorModeGlyph.textContent = getGraphColorModeGlyph(state.graph.colorMode);
+  }
+  const graphLensLabel = `${t("graph.lens")}: ${getGraphLensLabel(state.graph.lens)}`;
+  elements.graphLensButton.classList.toggle("is-active", state.graph.lens !== "all");
+  elements.graphLensButton.title = graphLensLabel;
+  elements.graphLensButton.setAttribute("aria-label", graphLensLabel);
+  const graphLensGlyph = elements.graphLensButton.querySelector<HTMLElement>(".graph-toolbar-button__glyph");
+  if (graphLensGlyph) {
+    graphLensGlyph.textContent = getGraphLensGlyph(state.graph.lens);
   }
   elements.graphFolderScopeButton.classList.toggle("is-active", state.graph.folderScoped);
   elements.graphExistingOnlyButton.classList.toggle("is-active", state.graph.existingFilesOnly);
@@ -4260,21 +4364,30 @@ function renderGraphStats(): void {
     return;
   }
 
-  const stats = state.graph.snapshot.stats;
+  const sourceStats = state.graph.snapshot.stats;
+  const visibleSnapshot = getVisibleGraphSnapshot();
+  const stats = visibleSnapshot?.stats ?? sourceStats;
   const modeLabel = state.graph.mode === "local" ? t("graph.localGraph") : t("graph.globalGraph");
   const scopeLabel = state.graph.folderScoped
     ? state.vault.selectedFolderPath || t("graph.rootScope")
     : t("graph.wholeVault");
+  const lensLabel = `${t("graph.lens")}: ${getGraphLensLabel(state.graph.lens)}`;
 
-  elements.graphStats.innerHTML = [
+  const labels = [
     modeLabel,
     scopeLabel,
+    lensLabel,
+    state.graph.lens === "all"
+      ? null
+      : t("graph.lensVisible", { visible: stats.noteCount, total: sourceStats.noteCount }),
     t("graph.notes", { count: stats.noteCount }),
     t("graph.edges", { count: stats.edgeCount }),
     t("graph.tags", { count: stats.tagCount }),
     t("graph.dangling", { count: stats.danglingCount }),
     t("graph.orphansCount", { count: stats.orphanNoteCount }),
-  ]
+  ].filter((label): label is string => label !== null);
+
+  elements.graphStats.innerHTML = labels
     .map((label) => `<span class="graph-stat">${escapeHtml(label)}</span>`)
     .join("");
 }
@@ -4301,10 +4414,11 @@ function renderGraphCanvas(): void {
   const svg = elements.graphCanvas;
   svg.innerHTML = "";
 
-  const snapshot = state.graph.snapshot;
+  const sourceSnapshot = state.graph.snapshot;
+  const snapshot = getVisibleGraphSnapshot();
   const pathHighlights = getGraphPathHighlights(state.graph.path);
   const colorState = getGraphColorState();
-  if (!snapshot) {
+  if (!sourceSnapshot || !snapshot) {
     svg.classList.remove("is-dense");
     elements.graphEmptyState.hidden = false;
     elements.graphEmptyState.textContent = state.graph.error ?? t("graph.loadingNotStarted");
@@ -4321,7 +4435,8 @@ function renderGraphCanvas(): void {
   if (snapshot.nodes.length === 0) {
     svg.classList.remove("is-dense");
     elements.graphEmptyState.hidden = false;
-    elements.graphEmptyState.textContent = state.graph.error ?? t("graph.noData");
+    elements.graphEmptyState.textContent = state.graph.error
+      ?? (state.graph.lens === "all" ? t("graph.noData") : t("graph.noLensData"));
     return;
   }
 
@@ -4491,18 +4606,127 @@ function getGraphLayoutPositions(): Map<string, GraphPoint> | null {
 }
 
 function getGraphLayoutResult(): GraphLayoutResult | null {
-  if (!state.graph.snapshot) {
+  const snapshot = getVisibleGraphSnapshot();
+  if (!snapshot) {
     return null;
   }
 
-  const key = getGraphLayoutCacheKey(state.graph.snapshot, state.vault.selectedNoteId, state.graph.mode);
+  const key = getGraphLayoutCacheKey(snapshot, state.vault.selectedNoteId, state.graph.mode);
   if (graphLayoutCache?.key === key) {
     return graphLayoutCache.result;
   }
 
-  const result = buildGraphLayout(state.graph.snapshot, state.vault.selectedNoteId, state.graph.mode);
+  const result = buildGraphLayout(snapshot, state.vault.selectedNoteId, state.graph.mode);
   graphLayoutCache = { key, result };
   return result;
+}
+
+function getVisibleGraphSnapshot(): GraphSnapshot | null {
+  if (!state.graph.snapshot) {
+    return null;
+  }
+
+  if (state.graph.lens === "all") {
+    return state.graph.snapshot;
+  }
+
+  return applyGraphLens(state.graph.snapshot, state.graph.lens);
+}
+
+function applyGraphLens(snapshot: GraphSnapshot, lens: GraphLens): GraphSnapshot {
+  const nodeById = new Map(snapshot.nodes.map((node) => [node.id, node]));
+  const visibleNodeIds = new Set<string>();
+  const visibleNoteNodeIds = new Set<string>();
+
+  snapshot.nodes.forEach((node) => {
+    if (node.type !== "note" || !node.noteId || !matchesGraphLensNote(node, lens)) {
+      return;
+    }
+
+    visibleNodeIds.add(node.id);
+    visibleNoteNodeIds.add(node.id);
+  });
+
+  const visibleEdges = lens === "orphans"
+    ? []
+    : snapshot.edges.filter((edge) => {
+      const source = nodeById.get(edge.source);
+      const target = nodeById.get(edge.target);
+      if (!source || !target) {
+        return false;
+      }
+
+      if (source.type === "note" && target.type === "note") {
+        return visibleNoteNodeIds.has(source.id) && visibleNoteNodeIds.has(target.id);
+      }
+
+      if (source.type === "note" && visibleNoteNodeIds.has(source.id)) {
+        visibleNodeIds.add(target.id);
+        return true;
+      }
+
+      if (target.type === "note" && visibleNoteNodeIds.has(target.id)) {
+        visibleNodeIds.add(source.id);
+        return true;
+      }
+
+      return false;
+    });
+
+  const visibleNodes = snapshot.nodes.filter((node) => visibleNodeIds.has(node.id));
+  return {
+    nodes: visibleNodes,
+    edges: visibleEdges,
+    stats: getGraphSnapshotStats(visibleNodes, visibleEdges),
+  };
+}
+
+function matchesGraphLensNote(node: GraphNode, lens: GraphLens): boolean {
+  if (lens === "all") {
+    return true;
+  }
+
+  if (lens === "connected-core") {
+    return !isGraphOrphanNode(node);
+  }
+
+  if (lens === "orphans") {
+    return isGraphOrphanNode(node);
+  }
+
+  const note = node.noteId ? state.vault.notes.find((item) => item.id === node.noteId) : undefined;
+  if (!note) {
+    return false;
+  }
+
+  if (lens === "agent-context") {
+    return isAgentContextNote(note);
+  }
+
+  if (lens === "tasks") {
+    return isTaskNote(note);
+  }
+
+  if (lens === "decisions") {
+    return isDecisionNote(note);
+  }
+
+  return true;
+}
+
+function getGraphSnapshotStats(
+  nodes: GraphNode[],
+  edges: GraphSnapshot["edges"]
+): GraphSnapshot["stats"] {
+  const noteNodes = nodes.filter((node) => node.type === "note");
+  return {
+    noteCount: noteNodes.length,
+    tagCount: nodes.filter((node) => node.type === "tag").length,
+    danglingCount: nodes.filter((node) => node.type === "dangling").length,
+    orphanNoteCount: noteNodes.filter(isGraphOrphanNode).length,
+    edgeCount: edges.length,
+    maxNodeSize: Math.max(0, ...nodes.map((node) => node.size)),
+  };
 }
 
 function getGraphSelectionHighlights(
@@ -7218,6 +7442,47 @@ function isGraphOrphanNode(node: GraphNode): boolean {
   return node.type === "note" && (node.orphan === true || node.degree === 0);
 }
 
+function isAgentContextNote(note: Note): boolean {
+  const path = normalizeGraphLensPath(note.id);
+  return path === "agents.md"
+    || path === "readme.md"
+    || path === "claude.md"
+    || path === "agents_md/framework.md"
+    || path === "agents_md/shared/collaboration.md"
+    || path === "agents_md/shared/sessions.md"
+    || path === "hybrid/readme.md"
+    || path === "hybrid/context/decisions.md"
+    || path === "hybrid/context/readme.md";
+}
+
+function isTaskNote(note: Note): boolean {
+  const path = normalizeGraphLensPath(note.id);
+  const tags = getNoteTags(note).map((tag) => tag.toLowerCase());
+  return path.startsWith("hybrid/tasks/")
+    || path.includes("/tasks/")
+    || /^t-\d+/.test(note.title.toLowerCase())
+    || tags.some((tag) => tag === "task" || tag === "tasks" || tag === "todo");
+}
+
+function isDecisionNote(note: Note): boolean {
+  const path = normalizeGraphLensPath(note.id);
+  const title = note.title.toLowerCase();
+  const tags = getNoteTags(note).map((tag) => tag.toLowerCase());
+  return path === "hybrid/context/decisions.md"
+    || path.startsWith("adr/")
+    || path.startsWith("adrs/")
+    || path.includes("/adr/")
+    || path.includes("/decisions/")
+    || title.includes("decision")
+    || title.includes("decisions")
+    || /^adr(?:[-_ ]?\d+)?\b/.test(title)
+    || tags.some((tag) => tag === "adr" || tag === "decision" || tag === "decisions");
+}
+
+function normalizeGraphLensPath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/^\/+/, "").toLowerCase();
+}
+
 function placeDenseGraphOrphans(
   positions: Map<string, GraphPoint>,
   nodes: GraphNode[],
@@ -7682,7 +7947,7 @@ function getGraphColorState(): {
   nodeColors: Map<string, { fill: string; stroke: string }>;
   items: Array<{ key: string; label: string; color: string; count: number }>;
 } | null {
-  const snapshot = state.graph.snapshot;
+  const snapshot = getVisibleGraphSnapshot();
   if (!snapshot || state.graph.colorMode === "none") {
     return null;
   }

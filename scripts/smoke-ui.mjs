@@ -105,6 +105,18 @@ async function runViewportSmoke(browser, viewport, label, options) {
     await expectVisible(page.getByTestId("graph-pane"), `${label}: graph pane`);
     await expectText(page.locator("#graph-stats"), /граф|graph|замет|note/i, `${label}: graph stats`);
     await expectLargeGraphCanvas(page, `${label}: large graph canvas`);
+    await setGraphLens(page, "orphans", `${label}: orphans lens`);
+    await expectGraphLensMetrics(page, `${label}: orphans lens`, {
+      minNodes: 100,
+      maxEdges: 0,
+      maxLabelsRatio: 0.25,
+    });
+    await setGraphLens(page, "agent-context", `${label}: agent context lens`);
+    await expectGraphLensMetrics(page, `${label}: agent context lens`, {
+      minNodes: 5,
+      maxNodes: 12,
+      maxEdges: 2,
+    });
 
     await page.getByTestId("activity-memory").click();
     await expectVisible(page.getByTestId("memory-layout"), `${label}: memory layout`);
@@ -125,6 +137,8 @@ async function runViewportSmoke(browser, viewport, label, options) {
 async function seedSmokeVault(vaultDir) {
   await mkdir(path.join(vaultDir, "archive"), { recursive: true });
   await mkdir(path.join(vaultDir, "projects"), { recursive: true });
+  await mkdir(path.join(vaultDir, "hybrid", "context"), { recursive: true });
+  await mkdir(path.join(vaultDir, "hybrid", "tasks"), { recursive: true });
   await writeFile(
     path.join(vaultDir, "Welcome.md"),
     "# Welcome\n\nSee [[Ideas]] and [[projects/Linked 01]].\n",
@@ -133,6 +147,20 @@ async function seedSmokeVault(vaultDir) {
   await writeFile(
     path.join(vaultDir, "Ideas.md"),
     "# Ideas\n\nBack to [[Welcome]].\n",
+    "utf8"
+  );
+  await writeFile(path.join(vaultDir, "AGENTS.md"), "# AGENTS\n\nGraph lens smoke.", "utf8");
+  await writeFile(path.join(vaultDir, "README.md"), "# README\n\nProject context.", "utf8");
+  await writeFile(path.join(vaultDir, "CLAUDE.md"), "# CLAUDE\n\nAssistant context.", "utf8");
+  await writeFile(path.join(vaultDir, "hybrid", "README.md"), "# Hybrid\n\nHybrid context.", "utf8");
+  await writeFile(
+    path.join(vaultDir, "hybrid", "context", "DECISIONS.md"),
+    "# Decisions\n\nArchitecture decisions live here.\n",
+    "utf8"
+  );
+  await writeFile(
+    path.join(vaultDir, "hybrid", "tasks", "T-001-lens-smoke.md"),
+    "# T-001 Lens Smoke\n\nTask context.\n",
     "utf8"
   );
 
@@ -160,10 +188,69 @@ async function seedSmokeVault(vaultDir) {
 
 async function expectLargeGraphCanvas(page, label) {
   await page.locator("#graph-canvas.is-dense .graph-node").first().waitFor({ state: "visible", timeout: 5_000 });
-  const metrics = await page.evaluate(() => {
+  const metrics = await getGraphCanvasMetrics(page);
+
+  if (!metrics.dense || metrics.nodeCount < 100) {
+    throw new Error(`${label} expected dense graph with at least 100 nodes, got ${JSON.stringify(metrics)}`);
+  }
+
+  if (
+    !metrics.contentBounds
+    || metrics.contentBounds.minX < -80
+    || metrics.contentBounds.maxX > 1080
+    || metrics.contentBounds.minY < -80
+    || metrics.contentBounds.maxY > 760
+  ) {
+    throw new Error(`${label} expected dense graph content to fit the SVG viewBox, got ${JSON.stringify(metrics)}`);
+  }
+
+  if (metrics.labelCount >= metrics.nodeCount * 0.55) {
+    throw new Error(`${label} expected dense graph labels to be reduced, got ${JSON.stringify(metrics)}`);
+  }
+}
+
+async function setGraphLens(page, lens, label) {
+  const pane = page.getByTestId("graph-pane");
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const current = await pane.evaluate((element) => element.dataset.lens ?? "all");
+    if (current === lens) {
+      return;
+    }
+
+    await page.getByTestId("graph-lens-button").click();
+    await page.waitForTimeout(120);
+  }
+
+  const current = await pane.evaluate((element) => element.dataset.lens ?? "all");
+  throw new Error(`${label} expected lens ${lens}, got ${current}`);
+}
+
+async function expectGraphLensMetrics(page, label, expected) {
+  await page.locator("#graph-canvas .graph-node").first().waitFor({ state: "visible", timeout: 5_000 });
+  const metrics = await getGraphCanvasMetrics(page);
+  if (metrics.nodeCount < expected.minNodes) {
+    throw new Error(`${label} expected at least ${expected.minNodes} nodes, got ${JSON.stringify(metrics)}`);
+  }
+
+  if (expected.maxNodes !== undefined && metrics.nodeCount > expected.maxNodes) {
+    throw new Error(`${label} expected at most ${expected.maxNodes} nodes, got ${JSON.stringify(metrics)}`);
+  }
+
+  if (expected.maxEdges !== undefined && metrics.edgeCount > expected.maxEdges) {
+    throw new Error(`${label} expected at most ${expected.maxEdges} edges, got ${JSON.stringify(metrics)}`);
+  }
+
+  if (expected.maxLabelsRatio !== undefined && metrics.labelCount >= metrics.nodeCount * expected.maxLabelsRatio) {
+    throw new Error(`${label} expected fewer labels, got ${JSON.stringify(metrics)}`);
+  }
+}
+
+async function getGraphCanvasMetrics(page) {
+  return page.evaluate(() => {
     const svg = document.querySelector("#graph-canvas");
     const viewport = svg?.querySelector("g");
     const nodes = [...(svg?.querySelectorAll(".graph-node") ?? [])];
+    const edges = [...(svg?.querySelectorAll(".graph-edge") ?? [])];
     const labels = [...(svg?.querySelectorAll(".graph-label") ?? [])];
     const bbox = viewport instanceof SVGGraphicsElement ? viewport.getBBox() : null;
     const matrix = viewport instanceof SVGGElement
@@ -186,6 +273,7 @@ async function expectLargeGraphCanvas(page, label) {
     return {
       dense: svg?.classList.contains("is-dense") === true,
       nodeCount: nodes.length,
+      edgeCount: edges.length,
       labelCount: labels.length,
       contentBounds: corners.length === 0
         ? null
@@ -197,24 +285,6 @@ async function expectLargeGraphCanvas(page, label) {
         },
     };
   });
-
-  if (!metrics.dense || metrics.nodeCount < 100) {
-    throw new Error(`${label} expected dense graph with at least 100 nodes, got ${JSON.stringify(metrics)}`);
-  }
-
-  if (
-    !metrics.contentBounds
-    || metrics.contentBounds.minX < -80
-    || metrics.contentBounds.maxX > 1080
-    || metrics.contentBounds.minY < -80
-    || metrics.contentBounds.maxY > 760
-  ) {
-    throw new Error(`${label} expected dense graph content to fit the SVG viewBox, got ${JSON.stringify(metrics)}`);
-  }
-
-  if (metrics.labelCount >= metrics.nodeCount * 0.55) {
-    throw new Error(`${label} expected dense graph labels to be reduced, got ${JSON.stringify(metrics)}`);
-  }
 }
 
 async function expectVisible(locator, label) {
