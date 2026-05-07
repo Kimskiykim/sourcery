@@ -32,29 +32,45 @@ export interface McpTool {
   inputSchema: Record<string, unknown>;
 }
 
+export type SourceryMcpServerOptions = {
+  requireInitialize?: boolean;
+};
+
 const MCP_PROTOCOL_VERSION = "2024-11-05";
 const JSON_RPC_VERSION = "2.0" as const;
 
 export class SourceryMcpServer {
-  private initialized = false;
+  private initialized: boolean;
+  private readonly requireInitialize: boolean;
 
-  constructor(private readonly agent: AgentRuntime) {}
+  constructor(
+    private readonly agent: AgentRuntime,
+    options: SourceryMcpServerOptions = {}
+  ) {
+    this.requireInitialize = options.requireInitialize !== false;
+    this.initialized = !this.requireInitialize;
+  }
 
-  async handleMessage(message: JsonRpcRequest): Promise<JsonRpcResponse | null> {
-    if (message.jsonrpc !== JSON_RPC_VERSION || typeof message.method !== "string") {
-      return createJsonRpcError(message.id ?? null, -32600, "Invalid Request");
+  async handleMessage(message: JsonRpcRequest | unknown): Promise<JsonRpcResponse | null> {
+    if (!message || typeof message !== "object") {
+      return createJsonRpcError(null, -32600, "Invalid Request");
     }
 
-    if (message.method === "notifications/initialized") {
+    const request = message as JsonRpcRequest;
+    if (request.jsonrpc !== JSON_RPC_VERSION || typeof request.method !== "string") {
+      return createJsonRpcError(request.id ?? null, -32600, "Invalid Request");
+    }
+
+    if (request.method === "notifications/initialized") {
       this.initialized = true;
       return null;
     }
 
-    if (message.method === "initialize") {
+    if (request.method === "initialize") {
       this.initialized = true;
       return {
         jsonrpc: JSON_RPC_VERSION,
-        id: message.id ?? null,
+        id: request.id ?? null,
         result: {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: {
@@ -70,50 +86,50 @@ export class SourceryMcpServer {
       };
     }
 
-    if (!this.initialized) {
-      return createJsonRpcError(message.id ?? null, -32002, "Server not initialized");
+    if (this.requireInitialize && !this.initialized) {
+      return createJsonRpcError(request.id ?? null, -32002, "Server not initialized");
     }
 
-    if (message.method === "ping") {
+    if (request.method === "ping") {
       return {
         jsonrpc: JSON_RPC_VERSION,
-        id: message.id ?? null,
+        id: request.id ?? null,
         result: {},
       };
     }
 
-    if (message.method === "tools/list") {
+    if (request.method === "tools/list") {
       return {
         jsonrpc: JSON_RPC_VERSION,
-        id: message.id ?? null,
+        id: request.id ?? null,
         result: {
           tools: listMcpTools(this.agent),
         },
       };
     }
 
-    if (message.method === "resources/list") {
+    if (request.method === "resources/list") {
       return {
         jsonrpc: JSON_RPC_VERSION,
-        id: message.id ?? null,
+        id: request.id ?? null,
         result: {
           resources: listMcpResources(),
         },
       };
     }
 
-    if (message.method === "resources/templates/list") {
+    if (request.method === "resources/templates/list") {
       return {
         jsonrpc: JSON_RPC_VERSION,
-        id: message.id ?? null,
+        id: request.id ?? null,
         result: {
           resourceTemplates: listMcpResourceTemplates(),
         },
       };
     }
 
-    if (message.method === "resources/read") {
-      const params = asObject(message.params);
+    if (request.method === "resources/read") {
+      const params = asObject(request.params);
       try {
         const result = await readMcpResource(
           this.agent,
@@ -121,30 +137,30 @@ export class SourceryMcpServer {
         );
         return {
           jsonrpc: JSON_RPC_VERSION,
-          id: message.id ?? null,
+          id: request.id ?? null,
           result,
         };
       } catch (error) {
         return createJsonRpcError(
-          message.id ?? null,
+          request.id ?? null,
           -32000,
           error instanceof Error ? error.message : "Resource read failed"
         );
       }
     }
 
-    if (message.method === "prompts/list") {
+    if (request.method === "prompts/list") {
       return {
         jsonrpc: JSON_RPC_VERSION,
-        id: message.id ?? null,
+        id: request.id ?? null,
         result: {
           prompts: listMcpPrompts(),
         },
       };
     }
 
-    if (message.method === "prompts/get") {
-      const params = asObject(message.params);
+    if (request.method === "prompts/get") {
+      const params = asObject(request.params);
       try {
         const result = await getMcpPrompt(
           this.agent,
@@ -153,32 +169,32 @@ export class SourceryMcpServer {
         );
         return {
           jsonrpc: JSON_RPC_VERSION,
-          id: message.id ?? null,
+          id: request.id ?? null,
           result,
         };
       } catch (error) {
         return createJsonRpcError(
-          message.id ?? null,
+          request.id ?? null,
           -32000,
           error instanceof Error ? error.message : "Prompt get failed"
         );
       }
     }
 
-    if (message.method === "tools/call") {
-      const params = asObject(message.params);
+    if (request.method === "tools/call") {
+      const params = asObject(request.params);
       const toolName = typeof params?.name === "string" ? params.name : "";
       const args = asObject(params?.arguments) ?? {};
 
       const result = await this.callTool(toolName, args);
       return {
         jsonrpc: JSON_RPC_VERSION,
-        id: message.id ?? null,
+        id: request.id ?? null,
         result,
       };
     }
 
-    return createJsonRpcError(message.id ?? null, -32601, "Method not found");
+    return createJsonRpcError(request.id ?? null, -32601, "Method not found");
   }
 
   private async callTool(

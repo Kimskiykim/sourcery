@@ -7,10 +7,12 @@ import path from "node:path";
 import { createAppContext, startAppServer } from "../dist/server.js";
 
 const rootDir = process.cwd();
+let nextHttpMcpId = 1;
 
 await runReadOnlySmoke();
 await runWriteEnabledSmoke();
 await runAttachedHttpSmoke();
+await runHttpMcpEndpointSmoke();
 
 console.log("Agent MCP smoke passed");
 
@@ -205,6 +207,91 @@ async function runAttachedHttpSmoke() {
     await new Promise((resolve) => server.close(resolve));
     await rm(tempRoot, { recursive: true, force: true });
   }
+}
+
+async function runHttpMcpEndpointSmoke() {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sourcery-agent-smoke-http-mcp-"));
+  const host = "127.0.0.1";
+  const port = 6200 + Math.floor(Math.random() * 1000);
+  const baseUrl = `http://${host}:${port}`;
+  const context = createAppContext({
+    rootDir,
+    distDir: path.join(rootDir, "dist"),
+    vaultDir: path.join(tempRoot, "vault"),
+    appStateDir: path.join(tempRoot, ".obsidian-lite"),
+  });
+  const { server, watcher } = await startAppServer({
+    context,
+    host,
+    port,
+    watchVault: true,
+  });
+
+  try {
+    await writeFile(path.join(tempRoot, "vault", "AGENTS.md"), "# Agent Instructions\nUse HTTP MCP.", "utf8");
+    await writeFile(path.join(tempRoot, "vault", "README.md"), "# HTTP MCP Project Readme", "utf8");
+
+    const initialize = await callHttpMcp(baseUrl, "initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: {
+        name: "sourcery-agent-smoke-http",
+        version: "0.0.0",
+      },
+    });
+    assert.equal(initialize.serverInfo.name, "sourcery");
+
+    const tools = await callHttpMcp(baseUrl, "tools/list", {});
+    const toolNames = tools.tools.map((tool) => tool.name);
+    assert.ok(toolNames.includes("connections.list"));
+    assert.ok(toolNames.includes("context.pack"));
+    assert.equal(toolNames.includes("notes.create"), false);
+    assert.equal(toolNames.includes("notes.update"), false);
+
+    const connections = await callHttpMcpTool(baseUrl, "connections.list", {});
+    assert.equal(connections.defaultConnectionId, "default");
+
+    const contextPack = await callHttpMcpTool(baseUrl, "context.pack", {
+      query: "Welcome",
+      limit: 5,
+    });
+    assert.ok(contextPack.bootstrapNotes.some((note) => note.noteRef.noteId === "AGENTS.md"));
+    assert.ok(contextPack.bootstrapNotes.some((note) => note.noteRef.noteId === "README.md"));
+    assert.ok(contextPack.notes.some((note) => note.noteRef.noteId === "Welcome.md"));
+  } finally {
+    watcher?.close();
+    context.connectionWatcher?.close();
+    await new Promise((resolve) => server.close(resolve));
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+async function callHttpMcp(baseUrl, method, params) {
+  const response = await fetch(`${baseUrl}/mcp`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: nextHttpMcpId++,
+      method,
+      params,
+    }),
+  });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.error, undefined, payload.error?.message);
+  return payload.result;
+}
+
+async function callHttpMcpTool(baseUrl, name, args) {
+  const result = await callHttpMcp(baseUrl, "tools/call", {
+    name,
+    arguments: args,
+  });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text ?? `${name} failed`);
+  return result.structuredContent;
 }
 
 function startMcpClient(tempRoot, options) {

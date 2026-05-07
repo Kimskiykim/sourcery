@@ -22,6 +22,7 @@ import {
   AgentUpdateNoteInput,
 } from "./core/agent/types.js";
 import { AgentWorkspaceSDK, AGENT_NOTE_WRITE_DISABLED_ERROR } from "./core/agent/agent-sdk.js";
+import { SourceryMcpServer, type JsonRpcRequest } from "./core/agent/mcp-server.js";
 import {
   GraphSDK,
   WorkspaceTabsSessionStore,
@@ -148,6 +149,11 @@ export function createAppServer(context = createAppContext()): HttpServer {
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+
+      if (url.pathname === "/mcp") {
+        await handleMcpHttp(request, response, context);
+        return;
+      }
 
       if (url.pathname.startsWith("/api/")) {
         await handleApi(request, response, url, context);
@@ -353,14 +359,7 @@ export async function handleApi(
 ): Promise<void> {
   const queryConnectionId = readOptionalQueryString(url, "connectionId");
   context.workspaceRevision.syncConnections(context.connections.listConnections().map((connection) => connection.id));
-  const agent = new AgentWorkspaceSDK({
-    workspace: context.workspace,
-    wiki: new WikiSDK(),
-    graph: context.graph,
-    connections: context.connections,
-    tabsSession: context.tabsSession,
-    policy: context.agentPolicy,
-  });
+  const agent = createAgentRuntime(context);
 
   if (url.pathname === "/api/workspace/state" && request.method === "GET") {
     sendJson(
@@ -953,6 +952,71 @@ export async function handleApi(
   throw new MarkdownVaultError(404, "Not found");
 }
 
+export async function handleMcpHttp(
+  request: IncomingMessage,
+  response: ServerResponse,
+  context: AppContext
+): Promise<void> {
+  if (request.method === "OPTIONS") {
+    sendMcpNoContent(response);
+    return;
+  }
+
+  if (request.method !== "POST") {
+    sendMcpJson(response, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  context.workspaceRevision.syncConnections(context.connections.listConnections().map((connection) => connection.id));
+  const payload = await readJsonBody<JsonRpcRequest | JsonRpcRequest[]>(request);
+  const mcp = new SourceryMcpServer(createAgentRuntime(context), {
+    requireInitialize: false,
+  });
+
+  if (Array.isArray(payload)) {
+    if (payload.length === 0) {
+      sendMcpJson(response, 400, {
+        jsonrpc: "2.0",
+        id: null,
+        error: {
+          code: -32600,
+          message: "Invalid Request",
+        },
+      });
+      return;
+    }
+
+    const results = await Promise.all(payload.map((message) => mcp.handleMessage(message)));
+    const responses = results.filter((result): result is NonNullable<typeof result> => result !== null);
+    if (responses.length === 0) {
+      sendMcpNoContent(response);
+      return;
+    }
+
+    sendMcpJson(response, 200, responses);
+    return;
+  }
+
+  const result = await mcp.handleMessage(payload);
+  if (!result) {
+    sendMcpNoContent(response);
+    return;
+  }
+
+  sendMcpJson(response, 200, result);
+}
+
+function createAgentRuntime(context: AppContext): AgentWorkspaceSDK {
+  return new AgentWorkspaceSDK({
+    workspace: context.workspace,
+    wiki: new WikiSDK(),
+    graph: context.graph,
+    connections: context.connections,
+    tabsSession: context.tabsSession,
+    policy: context.agentPolicy,
+  });
+}
+
 function isNotesCollectionPath(pathname: string): boolean {
   return pathname === "/api/notes" || pathname === "/api/workspace/notes";
 }
@@ -1405,6 +1469,27 @@ function sendJson(response: ServerResponse, statusCode: number, payload: unknown
     "Cache-Control": "no-cache",
   });
   response.end(JSON.stringify(payload));
+}
+
+function sendMcpJson(response: ServerResponse, statusCode: number, payload: unknown): void {
+  response.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-cache",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  });
+  response.end(JSON.stringify(payload));
+}
+
+function sendMcpNoContent(response: ServerResponse): void {
+  response.writeHead(204, {
+    "Cache-Control": "no-cache",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  });
+  response.end();
 }
 
 function handleError(response: ServerResponse, error: unknown): void {

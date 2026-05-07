@@ -11,7 +11,7 @@ Sourcery — локальная markdown-first knowledge base.
 - source of truth — markdown-файлы в `vault/` или в подключённом `notesRoot`
 - wikilinks `[[...]]`, hashtags `#...`, backlinks и graph derived at runtime
 - есть локальный HTTP API для чтения и управления workspace
-- есть MCP server по `stdio` для агентных клиентов
+- есть MCP endpoint по HTTP JSON-RPC и MCP server по `stdio` для агентных клиентов
 - есть workspace connections: агент может работать не только с одним vault, а с несколькими подключёнными markdown roots
 - есть session/tabs model: агент может видеть, какие заметки открыты в UI, и открывать нужные заметки в табах
 - есть app memory вне vault: отдельное хранилище для памяти приложения, не смешанное с knowledge graph
@@ -66,7 +66,7 @@ http://127.0.0.1:4173
 
 После этого агент может ходить в HTTP API.
 
-### 2. Запуск MCP Connector К Уже Запущенному Sourcery
+### 2. Подключение MCP К Уже Запущенному Sourcery
 
 ```bash
 npm install
@@ -74,7 +74,13 @@ npm run build
 npm start
 ```
 
-В другом терминале можно проверить attached MCP connector:
+Если MCP-клиент поддерживает HTTP/URL transport, подключайте уже запущенный Sourcery напрямую:
+
+```text
+http://127.0.0.1:4173/mcp
+```
+
+Для stdio-only клиентов в другом терминале можно проверить attached MCP connector:
 
 ```bash
 SOURCERY_URL=http://127.0.0.1:4173 npm run mcp:connect
@@ -123,9 +129,34 @@ curl -X POST http://127.0.0.1:4173/api/agent/context \
   -d '{"query":"#backend","limit":10}'
 ```
 
-### Вариант 2. MCP Attached Connector
+### Вариант 2. HTTP MCP Endpoint
 
-Подходит, если агентный клиент умеет MCP и предпочитает tools/resources/prompts вместо ручной работы с HTTP.
+Подходит, если агентный клиент умеет MCP HTTP/URL transport.
+
+Рекомендуемый режим для внешних кодовых агентов: пользователь вручную запускает Sourcery, а агент подключается к endpoint уже запущенного сервера.
+
+```bash
+cd /absolute/path/to/obsidian_md_custom
+npm start
+```
+
+Типовой MCP config для клиентов с URL transport:
+
+```json
+{
+  "mcpServers": {
+    "sourcery": {
+      "url": "http://127.0.0.1:4173/mcp"
+    }
+  }
+}
+```
+
+Endpoint принимает JSON-RPC MCP messages через `POST /mcp`. Он использует тот же набор tools/resources/prompts, что и stdio MCP, и работает поверх текущего Sourcery runtime.
+
+### Вариант 3. MCP Attached Connector
+
+Подходит, если агентный клиент умеет MCP, но поддерживает только stdio servers.
 
 Рекомендуемый режим для внешних кодовых агентов: пользователь вручную запускает Sourcery, а агент подключает только connector к уже запущенному серверу.
 

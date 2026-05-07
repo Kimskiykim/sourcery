@@ -10,6 +10,7 @@
 - автоматизированный `npm run smoke:agent` для MCP stdio проверки agent-интеграции
 - `npm run verify`, объединяющий unit/API тесты и UI smoke
 - `context.pack` теперь отдельно возвращает bootstrap entrypoints проекта для кодовых агентов
+- HTTP MCP endpoint `POST /mcp` для клиентов, которые умеют подключаться к уже запущенному Sourcery по URL без stdio connector
 - `npm run mcp:connect` для подключения MCP-клиентов к уже запущенному Sourcery HTTP server без запуска Sourcery runtime внутри агентского проекта
 - graph view лучше масштабирует большие workspace-графы: dense layout, auto-fit и меньше визуального шума от labels
 - graph lenses для переключения между полным графом, связанным ядром, сиротами, agent context, задачами и решениями

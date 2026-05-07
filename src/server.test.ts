@@ -8,7 +8,13 @@ import test from "node:test";
 import type { WorkspaceTabsSessionSnapshot } from "./core/graph/types.js";
 import { MarkdownVaultError } from "./core/storage/markdown-vault.js";
 import { WorkspaceSDK } from "./core/workspace/workspace-sdk.js";
-import { createAppContext, createWorkspaceConnectionWatcher, handleApi, type AppContext } from "./server.js";
+import {
+  createAppContext,
+  createWorkspaceConnectionWatcher,
+  handleApi,
+  handleMcpHttp,
+  type AppContext,
+} from "./server.js";
 
 type TestContextLike = {
   after: (callback: () => Promise<void> | void) => void;
@@ -112,6 +118,57 @@ async function callApi(
       throw error;
     }
   }
+
+  return {
+    statusCode,
+    headers,
+    payload,
+  };
+}
+
+async function callMcpHttp(
+  context: AppContext,
+  options: {
+    method?: string;
+    body?: unknown;
+  } = {}
+): Promise<MockResponse> {
+  const body = options.body === undefined ? "" : JSON.stringify(options.body);
+  const request = {
+    method: options.method ?? "POST",
+    headers: {
+      host: "127.0.0.1",
+    },
+    async *[Symbol.asyncIterator]() {
+      if (body) {
+        yield Buffer.from(body, "utf8");
+      }
+    },
+  } as AsyncIterable<Buffer> & {
+    method: string;
+    headers: Record<string, string>;
+  };
+
+  let statusCode = 200;
+  let payload = "";
+  const headers: Record<string, string> = {};
+  const response = {
+    writeHead(nextStatusCode: number, nextHeaders: Record<string, string>) {
+      statusCode = nextStatusCode;
+      Object.assign(headers, nextHeaders);
+      return this;
+    },
+    end(chunk?: string | Buffer) {
+      if (chunk) {
+        payload += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      }
+    },
+  } as {
+    writeHead: (statusCode: number, headers: Record<string, string>) => unknown;
+    end: (chunk?: string | Buffer) => void;
+  };
+
+  await handleMcpHttp(request as never, response as never, context);
 
   return {
     statusCode,
@@ -770,6 +827,80 @@ test("agent endpoints expose capabilities search read backlinks graph and tab wo
   assert.equal(forbiddenUpdate.statusCode, 403);
   assert.deepEqual(readJson(forbiddenUpdate), {
     error: "Agent note writes are disabled by policy",
+  });
+});
+
+test("http mcp endpoint exposes read-only tools without a stdio connector", async (t) => {
+  const { context, workspace } = await createTestContext(t);
+  const note = await workspace.createNote({
+    title: "HTTP MCP",
+    content: "# HTTP MCP\n#agent",
+  });
+
+  const toolsResponse = readJson<{
+    jsonrpc: "2.0";
+    result: { tools: Array<{ name: string }> };
+  }>(await callMcpHttp(context, {
+    body: {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+    },
+  }));
+  const toolNames = toolsResponse.result.tools.map((tool) => tool.name);
+  assert.ok(toolNames.includes("connections.list"));
+  assert.ok(toolNames.includes("context.pack"));
+  assert.equal(toolNames.includes("notes.create"), false);
+  assert.equal(toolNames.includes("notes.update"), false);
+
+  const batchResponse = readJson<Array<{
+    id: number;
+    result: {
+      structuredContent?: {
+        defaultConnectionId?: string;
+        notes?: Array<{ noteRef: { noteId: string } }>;
+      };
+    };
+  }>>(await callMcpHttp(context, {
+    body: [
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "connections.list",
+          arguments: {},
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "context.pack",
+          arguments: {
+            query: "#agent",
+            limit: 5,
+          },
+        },
+      },
+    ],
+  }));
+  assert.equal(batchResponse[0]?.result.structuredContent?.defaultConnectionId, "default");
+  assert.ok(
+    batchResponse[1]?.result.structuredContent?.notes?.some((item) => item.noteRef.noteId === note.id)
+  );
+
+  const optionsResponse = await callMcpHttp(context, { method: "OPTIONS" });
+  assert.equal(optionsResponse.statusCode, 204);
+  assert.equal(optionsResponse.headers["Access-Control-Allow-Methods"], "POST, OPTIONS");
+
+  const invalidResponse = readJson<{ error: { code: number; message: string } }>(
+    await callMcpHttp(context, { body: null })
+  );
+  assert.deepEqual(invalidResponse.error, {
+    code: -32600,
+    message: "Invalid Request",
   });
 });
 

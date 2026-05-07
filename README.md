@@ -92,7 +92,7 @@ npm start
 
 Для безопасных изменений ассистенту стоит сначала читать `README.md`, `AGENTS.md` и `DEVELOPMENT_GUIDELINES.md`.
 
-Для внешних репозиториев предпочтительный MCP режим такой: Sourcery запускается вручную через `npm start`, а агент подключает `/absolute/path/to/obsidian_md_custom/dist/mcp-connect.js` с `SOURCERY_URL=http://127.0.0.1:4173`. Прямой `dist/mcp.js` оставлен для embedded/test сценариев.
+Для внешних репозиториев предпочтительный режим такой: Sourcery запускается вручную через `npm start`, а агент подключается к уже запущенному runtime. Если MCP-клиент поддерживает HTTP/URL transport, указывайте `http://127.0.0.1:4173/mcp`. Для stdio-only клиентов используйте `/absolute/path/to/obsidian_md_custom/dist/mcp-connect.js` с `SOURCERY_URL=http://127.0.0.1:4173`. Прямой `dist/mcp.js` оставлен для embedded/test сценариев.
 
 ## Как это работает
 
