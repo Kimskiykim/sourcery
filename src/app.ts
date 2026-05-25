@@ -6,6 +6,14 @@ import {
   shouldSkipMemorySave,
   type MemorySaveScope,
 } from "./frontend/save-coordinator.js";
+import {
+  clientPointToGraphPoint,
+  getGraphCanvasViewportTransform,
+  hitTestGraphCanvasNode,
+  type GraphCanvasHitTarget,
+} from "./frontend/graph-canvas-hit-test.js";
+import { getGraphCoreCenterY, getGraphOrphanRingGeometry, getGraphRingGeometry, shouldRenderDenseGraphOrphans } from "./frontend/graph-layout-geometry.js";
+import { getGraphNodeRadius as getBaseGraphNodeRadius } from "./frontend/graph-radius.js";
 import type {
   GraphBrokenLink,
   GraphBridgeNote,
@@ -236,7 +244,7 @@ interface Elements {
   notePreview: HTMLDivElement;
   noteMeta: HTMLElement;
   graphPane: HTMLElement;
-  graphCanvas: SVGSVGElement;
+  graphCanvas: HTMLCanvasElement;
   graphStats: HTMLElement;
   graphLegend: HTMLElement;
   graphEmptyState: HTMLElement;
@@ -350,11 +358,14 @@ type GraphLayoutResult = {
   bounds: GraphLayoutBounds;
   dense: boolean;
 };
+type GraphCanvasNodeTarget = GraphCanvasHitTarget & { node: GraphNode };
 
 let graphLayoutCache: {
   key: string;
   result: GraphLayoutResult;
 } | null = null;
+let graphCanvasNodeTargets: GraphCanvasNodeTarget[] = [];
+let graphPointerDownNodeId: string | null = null;
 const TRANSLATIONS: Record<Locale, Record<string, string>> = {
   ru: {
     "app.title": "Sourcery",
@@ -1111,7 +1122,7 @@ const elements: Elements = {
   notePreview: query<HTMLDivElement>("#note-preview"),
   noteMeta: query<HTMLElement>("#note-meta"),
   graphPane: query<HTMLElement>("#graph-pane"),
-  graphCanvas: query<SVGSVGElement>("#graph-canvas"),
+  graphCanvas: query<HTMLCanvasElement>("#graph-canvas"),
   graphStats: query<HTMLElement>("#graph-stats"),
   graphLegend: query<HTMLElement>("#graph-legend"),
   graphEmptyState: query<HTMLElement>("#graph-empty-state"),
@@ -2162,6 +2173,13 @@ function bindEvents(): void {
       return;
     }
 
+    const target = getGraphCanvasNodeAtEvent(event);
+    graphPointerDownNodeId = target?.node.id ?? null;
+    if (target) {
+      isGraphDragging = false;
+      return;
+    }
+
     isGraphDragging = false;
     graphDragPointerId = event.pointerId;
     graphLastPointer = { x: event.clientX, y: event.clientY };
@@ -2186,8 +2204,17 @@ function bindEvents(): void {
       return;
     }
 
-    state.graph.panX += (deltaX * GRAPH_VIEWBOX_WIDTH) / (rect.width * state.graph.zoom);
-    state.graph.panY += (deltaY * GRAPH_VIEWBOX_HEIGHT) / (rect.height * state.graph.zoom);
+    const viewport = getGraphCanvasViewportTransform({
+      panX: state.graph.panX,
+      panY: state.graph.panY,
+      zoom: state.graph.zoom,
+      viewBoxWidth: GRAPH_VIEWBOX_WIDTH,
+      viewBoxHeight: GRAPH_VIEWBOX_HEIGHT,
+      clientWidth: rect.width,
+      clientHeight: rect.height,
+    });
+    state.graph.panX += deltaX / (Math.max(0.001, viewport.scale) * state.graph.zoom);
+    state.graph.panY += deltaY / (Math.max(0.001, viewport.scale) * state.graph.zoom);
     renderGraphCanvas();
   });
 
@@ -2198,6 +2225,7 @@ function bindEvents(): void {
 
     elements.graphCanvas.releasePointerCapture(event.pointerId);
     graphDragPointerId = null;
+    graphPointerDownNodeId = null;
     elements.graphCanvas.classList.remove("is-dragging");
     window.setTimeout(() => {
       isGraphDragging = false;
@@ -2210,14 +2238,42 @@ function bindEvents(): void {
     }
   });
 
-  elements.graphCanvas.addEventListener("click", () => {
-    if (isGraphDragging || state.graph.selectedNodeId === null) {
+  elements.graphCanvas.addEventListener("click", (event: MouseEvent) => {
+    if (isGraphDragging) {
+      return;
+    }
+
+    const target = getGraphCanvasNodeAtEvent(event);
+    closeGraphNodeMenu();
+    state.graph.selectedNodeId = target
+      ? state.graph.selectedNodeId === target.node.id ? null : target.node.id
+      : null;
+    renderGraphCanvas();
+  });
+
+  elements.graphCanvas.addEventListener("dblclick", (event: MouseEvent) => {
+    if (isGraphDragging) {
+      return;
+    }
+
+    const target = getGraphCanvasNodeAtEvent(event);
+    if (!target?.node.noteId) {
       return;
     }
 
     closeGraphNodeMenu();
-    state.graph.selectedNodeId = null;
-    renderGraphCanvas();
+    void openNote(target.node.noteId, { nextView: getLastNoteView() });
+  });
+
+  elements.graphCanvas.addEventListener("contextmenu", (event: MouseEvent) => {
+    const target = getGraphCanvasNodeAtEvent(event);
+    if (!target?.node.noteId) {
+      return;
+    }
+
+    event.preventDefault();
+    closeGraphNodeMenu();
+    openGraphNodeMenu(target.node.noteId, event.clientX, event.clientY);
   });
 
   elements.graphCanvas.addEventListener("wheel", (event: WheelEvent) => {
@@ -4411,29 +4467,38 @@ function renderGraphLegend(): void {
 }
 
 function renderGraphCanvas(): void {
-  const svg = elements.graphCanvas;
-  svg.innerHTML = "";
+  const canvas = elements.graphCanvas;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    elements.graphEmptyState.hidden = false;
+    elements.graphEmptyState.textContent = state.graph.error ?? t("graph.loadError");
+    return;
+  }
+  graphCanvasNodeTargets = [];
 
   const sourceSnapshot = state.graph.snapshot;
   const snapshot = getVisibleGraphSnapshot();
   const pathHighlights = getGraphPathHighlights(state.graph.path);
   const colorState = getGraphColorState();
   if (!sourceSnapshot || !snapshot) {
-    svg.classList.remove("is-dense");
+    clearGraphCanvas(context);
+    canvas.classList.remove("is-dense");
     elements.graphEmptyState.hidden = false;
     elements.graphEmptyState.textContent = state.graph.error ?? t("graph.loadingNotStarted");
     return;
   }
 
   if (state.graph.loading && snapshot.nodes.length === 0) {
-    svg.classList.remove("is-dense");
+    clearGraphCanvas(context);
+    canvas.classList.remove("is-dense");
     elements.graphEmptyState.hidden = false;
     elements.graphEmptyState.textContent = t("graph.loading");
     return;
   }
 
   if (snapshot.nodes.length === 0) {
-    svg.classList.remove("is-dense");
+    clearGraphCanvas(context);
+    canvas.classList.remove("is-dense");
     elements.graphEmptyState.hidden = false;
     elements.graphEmptyState.textContent = state.graph.error
       ?? (state.graph.lens === "all" ? t("graph.noData") : t("graph.noLensData"));
@@ -4450,20 +4515,18 @@ function renderGraphCanvas(): void {
   const selectionHighlights = getGraphSelectionHighlights(snapshot, selectedNodeId);
   const layout = getGraphLayoutResult();
   if (!layout) {
+    clearGraphCanvas(context);
     elements.graphEmptyState.hidden = false;
     elements.graphEmptyState.textContent = state.graph.error ?? t("graph.loadingNotStarted");
-    svg.classList.remove("is-dense");
+    canvas.classList.remove("is-dense");
     return;
   }
-  svg.classList.toggle("is-dense", layout.dense);
+  canvas.classList.toggle("is-dense", layout.dense);
   const positions = layout.positions;
-
-  const namespace = "http://www.w3.org/2000/svg";
-  const viewport = document.createElementNS(namespace, "g");
-  viewport.setAttribute(
-    "transform",
-    `translate(${state.graph.panX} ${state.graph.panY}) scale(${state.graph.zoom})`
-  );
+  resizeGraphCanvasBackingStore(canvas);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.save();
+  applyGraphCanvasTransform(context, canvas);
 
   snapshot.edges.forEach((edge) => {
     const source = positions.get(edge.source);
@@ -4472,23 +4535,23 @@ function renderGraphCanvas(): void {
       return;
     }
 
-    const line = document.createElementNS(namespace, "line");
-    line.setAttribute("x1", String(source.x));
-    line.setAttribute("y1", String(source.y));
-    line.setAttribute("x2", String(target.x));
-    line.setAttribute("y2", String(target.y));
-    line.setAttribute(
-      "class",
-      [
-        "graph-edge",
-        edge.kind === "tag" ? "graph-edge--tag" : "",
-        pathHighlights.edgeIds.has(edge.id) ? "is-path" : "",
-        selectionHighlights.edgeIds.has(edge.id) ? "is-selected" : "",
-        selectionHighlights.hasSelection && !selectionHighlights.edgeIds.has(edge.id) ? "is-dimmed" : "",
-      ].filter(Boolean).join(" ")
-    );
-    line.setAttribute("stroke-width", String(Math.min(3.2, 1 + edge.weight * 0.45)));
-    viewport.append(line);
+    const selected = selectionHighlights.edgeIds.has(edge.id);
+    const dimmed = selectionHighlights.hasSelection && !selected;
+    const path = pathHighlights.edgeIds.has(edge.id);
+    drawGraphCanvasEdge(context, source, target, {
+      color: path
+        ? "rgba(200, 242, 255, 0.88)"
+        : selected
+          ? "rgba(255, 255, 255, 0.7)"
+          : edge.kind === "tag"
+            ? "rgba(143, 179, 255, 0.24)"
+            : layout.dense
+              ? "rgba(255, 255, 255, 0.12)"
+              : "rgba(255, 255, 255, 0.16)",
+      width: path ? 3.2 : selected ? 2.8 : Math.min(3.2, 1 + edge.weight * 0.45),
+      alpha: dimmed ? 0.12 : 1,
+      dashed: edge.kind === "tag",
+    });
   });
 
   snapshot.nodes.forEach((node) => {
@@ -4497,112 +4560,246 @@ function renderGraphCanvas(): void {
       return;
     }
 
-    const group = document.createElementNS(namespace, "g");
-    group.setAttribute("transform", `translate(${position.x} ${position.y})`);
-    group.setAttribute("class", "graph-node-button");
-    if (node.noteId) {
-      group.dataset.graphNoteId = node.noteId;
-    }
-    if (node.tag) {
-      group.dataset.graphTag = node.tag;
-    }
-    if (node.type === "dangling") {
-      group.dataset.graphDangling = node.label;
-    }
-    group.addEventListener("pointerdown", (event: PointerEvent) => {
-      event.stopPropagation();
-    });
-    group.addEventListener("pointerup", (event: PointerEvent) => {
-      event.stopPropagation();
-    });
-    group.addEventListener("contextmenu", (event: MouseEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!node.noteId) {
-        return;
-      }
-
-      openGraphNodeMenu(node.noteId, event.clientX, event.clientY);
-    });
-    group.addEventListener("click", (event: MouseEvent) => {
-      if (isGraphDragging) {
-        return;
-      }
-
-      event.stopPropagation();
-      closeGraphNodeMenu();
-      state.graph.selectedNodeId = state.graph.selectedNodeId === node.id ? null : node.id;
-      renderGraphCanvas();
-    });
-    group.addEventListener("dblclick", (event: MouseEvent) => {
-      if (isGraphDragging || !node.noteId) {
-        return;
-      }
-
-      event.stopPropagation();
-      closeGraphNodeMenu();
-      void openNote(node.noteId, { nextView: getLastNoteView() });
-    });
-
-    const circle = document.createElementNS(namespace, "circle");
-    const title = document.createElementNS(namespace, "title");
-    title.textContent = node.type === "tag" ? `#${node.tag ?? node.label}` : node.label;
-    group.append(title);
-
-    circle.setAttribute("r", String(getGraphNodeRadius(node, snapshot)));
     const nodeColor = colorState?.nodeColors.get(node.noteId ?? node.id);
-    if (nodeColor) {
-      circle.style.setProperty("--graph-node-fill", nodeColor.fill);
-      circle.style.setProperty("--graph-node-stroke", nodeColor.stroke);
-    }
-    circle.setAttribute(
-      "class",
-      [
-        "graph-node",
-        `graph-node--${node.type}`,
-        node.noteId === state.vault.selectedNoteId ? "is-active" : "",
-        node.type === "note" && node.noteId && pathHighlights.nodeIds.has(node.noteId) ? "is-path" : "",
-        selectionHighlights.selectedNodeId === node.id ? "is-selected" : "",
-        selectionHighlights.relatedNodeIds.has(node.id) ? "is-related" : "",
-        selectionHighlights.hasSelection
-          && selectionHighlights.selectedNodeId !== node.id
-          && !selectionHighlights.relatedNodeIds.has(node.id)
-          ? "is-dimmed"
-          : "",
-      ].filter(Boolean).join(" ")
-    );
-    group.append(circle);
+    const selected = selectionHighlights.selectedNodeId === node.id;
+    const related = selectionHighlights.relatedNodeIds.has(node.id);
+    const active = node.noteId === state.vault.selectedNoteId;
+    const path = node.type === "note" && node.noteId ? pathHighlights.nodeIds.has(node.noteId) : false;
+    const dimmed = selectionHighlights.hasSelection && !selected && !related;
+    const radius = getGraphNodeRadius(node, snapshot);
+
+    drawGraphCanvasNode(context, node, position, radius, {
+      fill: active
+        ? "#f6f1e8"
+        : path
+          ? "#c8f2ff"
+          : nodeColor?.fill ?? getDefaultGraphNodeFill(node),
+      stroke: selected
+        ? "rgba(143, 179, 255, 0.96)"
+        : active
+          ? "rgba(143, 179, 255, 0.82)"
+          : path
+            ? "rgba(200, 242, 255, 0.84)"
+            : nodeColor?.stroke ?? getDefaultGraphNodeStroke(node),
+      strokeWidth: selected ? 4 : related || active || path ? 3 : 2,
+      alpha: dimmed ? 0.22 : node.type === "note" && layout.dense ? 0.88 : 1,
+    });
+
+    graphCanvasNodeTargets.push({
+      id: node.id,
+      node,
+      x: position.x,
+      y: position.y,
+      radius: radius + 5,
+    });
 
     if (shouldShowGraphLabel(node, snapshot, layout, selectionHighlights, pathHighlights)) {
-      const label = document.createElementNS(namespace, "text");
-      label.setAttribute("y", String(getGraphNodeRadius(node, snapshot) + 16));
-      label.setAttribute(
-        "class",
-        [
-          "graph-label",
-          node.type === "dangling" ? "graph-label--muted" : "",
-          selectionHighlights.selectedNodeId === node.id ? "is-selected" : "",
-          selectionHighlights.relatedNodeIds.has(node.id) ? "is-related" : "",
-          selectionHighlights.hasSelection
-            && selectionHighlights.selectedNodeId !== node.id
-            && !selectionHighlights.relatedNodeIds.has(node.id)
-            ? "is-dimmed"
-            : "",
-        ].filter(Boolean).join(" ")
+      const labelLength = layout.dense && !related ? 13 : 16;
+      drawGraphCanvasLabel(
+        context,
+        truncateLabel(node.type === "tag" ? `#${node.tag ?? node.label}` : node.label, labelLength),
+        position.x,
+        position.y + radius + 16,
+        {
+          color: selected ? "#f6f1e8" : node.type === "dangling" ? "#c6bdfd" : "#eef2ff",
+          alpha: dimmed ? 0.22 : 1,
+          fontSize: layout.dense ? 10 : 11,
+        }
       );
-      const labelLength = layout.dense && !selectionHighlights.relatedNodeIds.has(node.id) ? 13 : 16;
-      label.textContent = truncateLabel(node.type === "tag" ? `#${node.tag ?? node.label}` : node.label, labelLength);
-      group.append(label);
     }
-
-    viewport.append(group);
   });
-
-  svg.append(viewport);
+  context.restore();
+  exposeGraphCanvasDebugMetrics(snapshot, layout);
 }
 
 function getGraphLayoutPositions(): Map<string, GraphPoint> | null {
   return getGraphLayoutResult()?.positions ?? null;
+}
+
+function clearGraphCanvas(context: CanvasRenderingContext2D): void {
+  resizeGraphCanvasBackingStore(elements.graphCanvas);
+  context.clearRect(0, 0, elements.graphCanvas.width, elements.graphCanvas.height);
+  graphCanvasNodeTargets = [];
+  exposeGraphCanvasDebugMetrics(null, null);
+}
+
+function resizeGraphCanvasBackingStore(canvas: HTMLCanvasElement): void {
+  const rect = canvas.getBoundingClientRect();
+  const pixelRatio = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round(rect.width * pixelRatio));
+  const height = Math.max(1, Math.round(rect.height * pixelRatio));
+  if (canvas.width !== width) {
+    canvas.width = width;
+  }
+  if (canvas.height !== height) {
+    canvas.height = height;
+  }
+}
+
+function applyGraphCanvasTransform(context: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
+  const rect = canvas.getBoundingClientRect();
+  const pixelRatio = window.devicePixelRatio || 1;
+  const viewport = getGraphCanvasViewportTransform({
+    panX: state.graph.panX,
+    panY: state.graph.panY,
+    zoom: state.graph.zoom,
+    viewBoxWidth: GRAPH_VIEWBOX_WIDTH,
+    viewBoxHeight: GRAPH_VIEWBOX_HEIGHT,
+    clientWidth: rect.width,
+    clientHeight: rect.height,
+  });
+  context.setTransform(
+    viewport.scale * pixelRatio * state.graph.zoom,
+    0,
+    0,
+    viewport.scale * pixelRatio * state.graph.zoom,
+    (viewport.offsetX + viewport.scale * state.graph.panX) * pixelRatio,
+    (viewport.offsetY + viewport.scale * state.graph.panY) * pixelRatio
+  );
+}
+
+function drawGraphCanvasEdge(
+  context: CanvasRenderingContext2D,
+  source: GraphPoint,
+  target: GraphPoint,
+  style: { color: string; width: number; alpha: number; dashed: boolean }
+): void {
+  context.save();
+  context.globalAlpha = style.alpha;
+  context.strokeStyle = style.color;
+  context.lineWidth = style.width / Math.max(0.2, state.graph.zoom);
+  context.setLineDash(style.dashed ? [4 / Math.max(0.2, state.graph.zoom), 5 / Math.max(0.2, state.graph.zoom)] : []);
+  context.beginPath();
+  context.moveTo(source.x, source.y);
+  context.lineTo(target.x, target.y);
+  context.stroke();
+  context.restore();
+}
+
+function drawGraphCanvasNode(
+  context: CanvasRenderingContext2D,
+  node: GraphNode,
+  position: GraphPoint,
+  radius: number,
+  style: { fill: string; stroke: string; strokeWidth: number; alpha: number }
+): void {
+  context.save();
+  context.globalAlpha = style.alpha;
+  context.fillStyle = style.fill;
+  context.strokeStyle = style.stroke;
+  context.lineWidth = style.strokeWidth / Math.max(0.2, state.graph.zoom);
+  context.beginPath();
+  context.arc(position.x, position.y, radius, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+  if (node.type === "tag") {
+    context.lineWidth = 1.2 / Math.max(0.2, state.graph.zoom);
+    context.strokeStyle = "rgba(255, 255, 255, 0.34)";
+    context.beginPath();
+    context.arc(position.x, position.y, Math.max(2, radius - 3), 0, Math.PI * 2);
+    context.stroke();
+  }
+  context.restore();
+}
+
+function drawGraphCanvasLabel(
+  context: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  style: { color: string; alpha: number; fontSize: number }
+): void {
+  context.save();
+  context.globalAlpha = style.alpha;
+  context.font = `${style.fontSize / Math.max(0.2, state.graph.zoom)}px Inter, system-ui, sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.lineWidth = 3 / Math.max(0.2, state.graph.zoom);
+  context.strokeStyle = "rgba(8, 12, 28, 0.82)";
+  context.fillStyle = style.color;
+  context.strokeText(text, x, y);
+  context.fillText(text, x, y);
+  context.restore();
+}
+
+function getDefaultGraphNodeFill(node: GraphNode): string {
+  if (node.type === "tag") {
+    return "rgba(143, 179, 255, 0.82)";
+  }
+
+  if (node.type === "dangling") {
+    return "rgba(209, 91, 82, 0.88)";
+  }
+
+  return "#f1ede4";
+}
+
+function getDefaultGraphNodeStroke(node: GraphNode): string {
+  if (node.type === "tag") {
+    return "rgba(143, 179, 255, 0.26)";
+  }
+
+  if (node.type === "dangling") {
+    return "rgba(209, 91, 82, 0.24)";
+  }
+
+  return "rgba(20, 20, 20, 0.6)";
+}
+
+function getGraphCanvasNodeAtEvent(event: MouseEvent | PointerEvent): GraphCanvasNodeTarget | null {
+  const rect = elements.graphCanvas.getBoundingClientRect();
+  const point = clientPointToGraphPoint(event.clientX, event.clientY, rect.left, rect.top, {
+    panX: state.graph.panX,
+    panY: state.graph.panY,
+    zoom: state.graph.zoom,
+    viewBoxWidth: GRAPH_VIEWBOX_WIDTH,
+    viewBoxHeight: GRAPH_VIEWBOX_HEIGHT,
+    clientWidth: rect.width,
+    clientHeight: rect.height,
+  });
+  return hitTestGraphCanvasNode(point, graphCanvasNodeTargets) as GraphCanvasNodeTarget | null;
+}
+
+function exposeGraphCanvasDebugMetrics(snapshot: GraphSnapshot | null, layout: GraphLayoutResult | null): void {
+  const rect = elements.graphCanvas.getBoundingClientRect();
+  const viewport = getGraphCanvasViewportTransform({
+    panX: state.graph.panX,
+    panY: state.graph.panY,
+    zoom: state.graph.zoom,
+    viewBoxWidth: GRAPH_VIEWBOX_WIDTH,
+    viewBoxHeight: GRAPH_VIEWBOX_HEIGHT,
+    clientWidth: rect.width,
+    clientHeight: rect.height,
+  });
+  const transformedBounds = layout?.bounds
+    ? {
+      minX: viewport.offsetX + (layout.bounds.minX * state.graph.zoom + state.graph.panX) * viewport.scale,
+      maxX: viewport.offsetX + (layout.bounds.maxX * state.graph.zoom + state.graph.panX) * viewport.scale,
+      minY: viewport.offsetY + (layout.bounds.minY * state.graph.zoom + state.graph.panY) * viewport.scale,
+      maxY: viewport.offsetY + (layout.bounds.maxY * state.graph.zoom + state.graph.panY) * viewport.scale,
+    }
+    : null;
+  (window as typeof window & {
+    __sourceryGraphMetrics?: {
+      dense: boolean;
+      nodeCount: number;
+      edgeCount: number;
+      labelCount: number;
+      contentBounds: GraphLayoutBounds | null;
+    };
+  }).__sourceryGraphMetrics = {
+    dense: layout?.dense ?? false,
+    nodeCount: graphCanvasNodeTargets.length,
+    edgeCount: snapshot?.edges.length ?? 0,
+    labelCount: snapshot && layout
+      ? snapshot.nodes.filter((node) => {
+        const selectionHighlights = getGraphSelectionHighlights(snapshot, state.graph.selectedNodeId);
+        const pathHighlights = getGraphPathHighlights(state.graph.path);
+        return shouldShowGraphLabel(node, snapshot, layout, selectionHighlights, pathHighlights);
+      }).length
+      : 0,
+    contentBounds: transformedBounds,
+  };
 }
 
 function getGraphLayoutResult(): GraphLayoutResult | null {
@@ -7290,7 +7487,15 @@ function buildGraphLayout(
   const dense = isDenseGraph(snapshot);
   const world = getGraphWorldSize(snapshot, mode, dense);
   const centerX = world.width / 2;
-  const centerY = dense && mode === "global" ? 310 : world.height / 2;
+  const centerY = getGraphCoreCenterY({ dense, mode, worldHeight: world.height });
+  const ringGeometry = getGraphRingGeometry({ dense, mode });
+  const orphanRingGeometry = getGraphOrphanRingGeometry({ dense, mode });
+  const renderDenseOrphans = shouldRenderDenseGraphOrphans({
+    dense,
+    mode,
+    noteCount: snapshot.stats.noteCount,
+    orphanNoteCount: snapshot.stats.orphanNoteCount,
+  });
 
   const selectedNode = mode === "local" && selectedNoteId
     ? snapshot.nodes.find((node) => node.noteId === selectedNoteId)
@@ -7302,7 +7507,7 @@ function buildGraphLayout(
   const allNoteNodes = snapshot.nodes
     .filter((node) => node.type === "note" && node.id !== selectedNode?.id)
     .sort((left, right) => right.size - left.size || left.label.localeCompare(right.label, "en"));
-  const orphanNoteNodes = dense && mode === "global"
+  const orphanNoteNodes = dense && mode === "global" && renderDenseOrphans
     ? allNoteNodes.filter(isGraphOrphanNode)
     : [];
   const noteNodes = dense && mode === "global"
@@ -7320,34 +7525,43 @@ function buildGraphLayout(
     noteNodes,
     centerX,
     centerY,
-    mode === "local" ? 170 : dense ? 145 : 120,
-    dense ? 88 : 78,
-    dense ? 16 : 10,
-    -Math.PI / 2
+    ringGeometry.note.baseRadius,
+    ringGeometry.note.radiusStep,
+    ringGeometry.note.maxPerRing,
+    ringGeometry.note.startAngle
   );
   placeNodesOnRings(
     positions,
     tagNodes,
     centerX,
     centerY,
-    mode === "local" ? 300 : dense ? 360 : 330,
-    dense ? 76 : 64,
-    dense ? 18 : 14,
-    -Math.PI / 2 + 0.16
+    ringGeometry.tag.baseRadius,
+    ringGeometry.tag.radiusStep,
+    ringGeometry.tag.maxPerRing,
+    ringGeometry.tag.startAngle
   );
   placeNodesOnRings(
     positions,
     danglingNodes,
     centerX,
     centerY,
-    mode === "local" ? 390 : dense ? 470 : 420,
-    62,
-    dense ? 18 : 16,
-    Math.PI / 2
+    ringGeometry.dangling.baseRadius,
+    ringGeometry.dangling.radiusStep,
+    ringGeometry.dangling.maxPerRing,
+    ringGeometry.dangling.startAngle
   );
 
   if (orphanNoteNodes.length > 0) {
-    placeDenseGraphOrphans(positions, orphanNoteNodes, world, centerY);
+    placeNodesOnRings(
+      positions,
+      orphanNoteNodes,
+      centerX,
+      centerY,
+      orphanRingGeometry.baseRadius,
+      orphanRingGeometry.radiusStep,
+      orphanRingGeometry.maxPerRing,
+      orphanRingGeometry.startAngle
+    );
   }
 
   if (snapshot.nodes.length <= 1) {
@@ -7372,13 +7586,17 @@ function buildGraphLayout(
 
   const simPoints = new Map<string, SimPoint>();
   snapshot.nodes.forEach((node) => {
-    const start = positions.get(node.id) ?? { x: centerX, y: centerY };
+    const start = positions.get(node.id);
+    if (!start) {
+      return;
+    }
+
     simPoints.set(node.id, {
       x: start.x,
       y: start.y,
       vx: 0,
       vy: 0,
-      fixed: node.id === selectedNode?.id || (dense && mode === "global" && isGraphOrphanNode(node)),
+      fixed: node.id === selectedNode?.id,
       targetX: start.x,
       targetY: start.y,
       radius: getGraphNodeRadius(node, snapshot),
@@ -7481,43 +7699,6 @@ function isDecisionNote(note: Note): boolean {
 
 function normalizeGraphLensPath(path: string): string {
   return path.replaceAll("\\", "/").replace(/^\/+/, "").toLowerCase();
-}
-
-function placeDenseGraphOrphans(
-  positions: Map<string, GraphPoint>,
-  nodes: GraphNode[],
-  world: { width: number; height: number },
-  centerY: number
-): void {
-  if (nodes.length === 0) {
-    return;
-  }
-
-  const columns = Math.max(8, Math.floor((world.width - 180) / 126));
-  const startX = (world.width - Math.min(nodes.length, columns) * 126) / 2 + 63;
-  const startY = Math.min(world.height - 240, centerY + 360);
-  placeNodesInGrid(positions, nodes, startX, startY, columns, 126, 74);
-}
-
-function placeNodesInGrid(
-  positions: Map<string, GraphPoint>,
-  nodes: GraphNode[],
-  startX: number,
-  startY: number,
-  columns: number,
-  columnGap: number,
-  rowGap: number
-): void {
-  nodes
-    .sort((left, right) => left.folderPath?.localeCompare(right.folderPath ?? "", "en") || left.label.localeCompare(right.label, "en"))
-    .forEach((node, index) => {
-      const column = index % columns;
-      const row = Math.floor(index / columns);
-      positions.set(node.id, {
-        x: startX + column * columnGap + seededDirection(node.id, "orphan", "x") * 5,
-        y: startY + row * rowGap + seededDirection(node.id, "orphan", "y") * 4,
-      });
-    });
 }
 
 function placeNodesOnRings(
@@ -7808,8 +7989,8 @@ function applyGraphAnchors(
 ): void {
   simPoints.forEach((point, nodeId) => {
     if (point.fixed) {
-      point.x = centerX;
-      point.y = centerY;
+      point.x = point.targetX;
+      point.y = point.targetY;
       point.vx = 0;
       point.vy = 0;
       return;
@@ -7874,17 +8055,7 @@ function seededDirection(leftId: string, rightId: string, axis: "x" | "y"): numb
 
 function getGraphNodeRadius(node: GraphNode, snapshot: GraphSnapshot | null = state.graph.snapshot): number {
   const dense = snapshot ? isDenseGraph(snapshot) : false;
-  if (node.type === "note") {
-    if (dense && isGraphOrphanNode(node)) {
-      return 6;
-    }
-
-    const minRadius = dense ? 8 : 10;
-    const maxRadius = dense ? 21 : 26;
-    return Math.max(minRadius, Math.min(maxRadius, 8 + node.size * (dense ? 1.05 : 1.35)));
-  }
-
-  return node.type === "tag" ? dense ? 7 : 9 : dense ? 6 : 8;
+  return getBaseGraphNodeRadius(node, dense);
 }
 
 function truncateLabel(value: string, maxLength: number): string {

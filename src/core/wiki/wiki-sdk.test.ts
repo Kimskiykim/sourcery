@@ -66,6 +66,45 @@ test("getMetadata returns links, backlinks, and tags", () => {
   assert.deepEqual(metadata.tags, ["target", "docs"]);
 });
 
+test("markdown links to md files resolve as note links and backlinks", () => {
+  const framework: WorkspaceNote = {
+    id: "agents_md/FRAMEWORK.md",
+    title: "FRAMEWORK",
+    folderPath: "agents_md",
+    content: "",
+    createdAt: "2026-04-20T00:00:00.000Z",
+    updatedAt: "2026-04-20T00:00:00.000Z",
+  };
+  const collaboration: WorkspaceNote = {
+    id: "agents_md/shared/COLLABORATION.md",
+    title: "COLLABORATION",
+    folderPath: "agents_md/shared",
+    content: "See [Framework](../FRAMEWORK.md)",
+    createdAt: "2026-04-20T00:00:00.000Z",
+    updatedAt: "2026-04-20T00:00:00.000Z",
+  };
+  const agents: WorkspaceNote = {
+    id: "AGENTS.md",
+    title: "AGENTS",
+    folderPath: "",
+    content: "Start with [Framework](agents_md/FRAMEWORK.md) and ignore [site](https://example.com/readme.md)",
+    createdAt: "2026-04-20T00:00:00.000Z",
+    updatedAt: "2026-04-20T00:00:00.000Z",
+  };
+
+  const notes = [framework, collaboration, agents];
+  const metadata = wiki.getMetadata(framework, notes);
+  const resolvedLinks = wiki.buildResolvedLinks(notes);
+
+  assert.deepEqual(metadata.backlinks, ["agents_md/shared/COLLABORATION.md", "AGENTS.md"]);
+  assert.deepEqual(resolvedLinks["agents_md/shared/COLLABORATION.md"], {
+    "agents_md/FRAMEWORK.md": 1,
+  });
+  assert.deepEqual(resolvedLinks["AGENTS.md"], {
+    "agents_md/FRAMEWORK.md": 1,
+  });
+});
+
 test("ambiguous title links stay unresolved while path-qualified links resolve", () => {
   const alphaA: WorkspaceNote = {
     id: "areas/a/Alpha.md",

@@ -187,7 +187,7 @@ async function seedSmokeVault(vaultDir) {
 }
 
 async function expectLargeGraphCanvas(page, label) {
-  await page.locator("#graph-canvas.is-dense .graph-node").first().waitFor({ state: "visible", timeout: 5_000 });
+  await waitForGraphCanvasMetrics(page, { minNodes: 100, dense: true }, label);
   const metrics = await getGraphCanvasMetrics(page);
 
   if (!metrics.dense || metrics.nodeCount < 100) {
@@ -201,7 +201,7 @@ async function expectLargeGraphCanvas(page, label) {
     || metrics.contentBounds.minY < -80
     || metrics.contentBounds.maxY > 760
   ) {
-    throw new Error(`${label} expected dense graph content to fit the SVG viewBox, got ${JSON.stringify(metrics)}`);
+    throw new Error(`${label} expected dense graph content to fit the graph viewBox, got ${JSON.stringify(metrics)}`);
   }
 
   if (metrics.labelCount >= metrics.nodeCount * 0.55) {
@@ -226,7 +226,7 @@ async function setGraphLens(page, lens, label) {
 }
 
 async function expectGraphLensMetrics(page, label, expected) {
-  await page.locator("#graph-canvas .graph-node").first().waitFor({ state: "visible", timeout: 5_000 });
+  await waitForGraphCanvasMetrics(page, { minNodes: expected.minNodes }, label);
   const metrics = await getGraphCanvasMetrics(page);
   if (metrics.nodeCount < expected.minNodes) {
     throw new Error(`${label} expected at least ${expected.minNodes} nodes, got ${JSON.stringify(metrics)}`);
@@ -247,45 +247,58 @@ async function expectGraphLensMetrics(page, label, expected) {
 
 async function getGraphCanvasMetrics(page) {
   return page.evaluate(() => {
-    const svg = document.querySelector("#graph-canvas");
-    const viewport = svg?.querySelector("g");
-    const nodes = [...(svg?.querySelectorAll(".graph-node") ?? [])];
-    const edges = [...(svg?.querySelectorAll(".graph-edge") ?? [])];
-    const labels = [...(svg?.querySelectorAll(".graph-label") ?? [])];
-    const bbox = viewport instanceof SVGGraphicsElement ? viewport.getBBox() : null;
-    const matrix = viewport instanceof SVGGElement
-      ? viewport.transform.baseVal.consolidate()?.matrix ?? null
-      : null;
-    const corners = bbox && matrix
-      ? [
-        { x: bbox.x, y: bbox.y },
-        { x: bbox.x + bbox.width, y: bbox.y },
-        { x: bbox.x + bbox.width, y: bbox.y + bbox.height },
-        { x: bbox.x, y: bbox.y + bbox.height },
-      ].map((point) => ({
-        x: matrix.a * point.x + matrix.c * point.y + matrix.e,
-        y: matrix.b * point.x + matrix.d * point.y + matrix.f,
-      }))
-      : [];
-    const xs = corners.map((point) => point.x);
-    const ys = corners.map((point) => point.y);
+    const canvas = document.querySelector("#graph-canvas");
+    const metrics = window.__sourceryGraphMetrics ?? {
+      dense: canvas?.classList.contains("is-dense") === true,
+      nodeCount: 0,
+      edgeCount: 0,
+      labelCount: 0,
+      contentBounds: null,
+    };
 
     return {
-      dense: svg?.classList.contains("is-dense") === true,
-      nodeCount: nodes.length,
-      edgeCount: edges.length,
-      labelCount: labels.length,
-      contentBounds: corners.length === 0
-        ? null
-        : {
-          minX: Math.min(...xs),
-          maxX: Math.max(...xs),
-          minY: Math.min(...ys),
-          maxY: Math.max(...ys),
-        },
+      ...metrics,
+      hasPaintedPixels: canvas instanceof HTMLCanvasElement
+        ? (() => {
+          const context = canvas.getContext("2d");
+          if (!context || canvas.width === 0 || canvas.height === 0) {
+            return false;
+          }
+
+          const sampleWidth = Math.min(canvas.width, 256);
+          const sampleHeight = Math.min(canvas.height, 256);
+          const image = context.getImageData(0, 0, sampleWidth, sampleHeight).data;
+          for (let index = 3; index < image.length; index += 4) {
+            if (image[index] > 0) {
+              return true;
+            }
+          }
+
+          return false;
+        })()
+        : false,
     };
   });
 }
+
+async function waitForGraphCanvasMetrics(page, expected, label) {
+  await page.waitForFunction((waitExpected) => {
+    const metrics = window.__sourceryGraphMetrics;
+    if (!metrics) {
+      return false;
+    }
+
+    if (waitExpected.dense !== undefined && metrics.dense !== waitExpected.dense) {
+      return false;
+    }
+
+    return metrics.nodeCount >= waitExpected.minNodes;
+  }, expected, { timeout: 5_000 }).catch(async (error) => {
+    const metrics = await getGraphCanvasMetrics(page).catch(() => null);
+    throw new Error(`${label} expected graph canvas metrics, got ${JSON.stringify(metrics)}: ${error.message}`);
+  });
+}
+
 
 async function expectVisible(locator, label) {
   await locator.waitFor({ state: "visible", timeout: 5_000 }).catch((error) => {

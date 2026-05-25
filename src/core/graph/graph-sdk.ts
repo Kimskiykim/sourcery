@@ -408,12 +408,12 @@ export class GraphSDK {
     return selectedNotes.flatMap((note) => {
       const occurrencesByLink = new Map<string, number>();
 
-      this.wiki.extractLinks(note.content).forEach(({ link }) => {
-        if (this.wiki.resolveLinkTarget(link, linkIndex)) {
+      this.wiki.extractLinks(note.content).forEach((link) => {
+        if (this.wiki.resolveLinkTarget(link, linkIndex, note)) {
           return;
         }
 
-        occurrencesByLink.set(link, (occurrencesByLink.get(link) ?? 0) + 1);
+        occurrencesByLink.set(link.link, (occurrencesByLink.get(link.link) ?? 0) + 1);
       });
 
       return [...occurrencesByLink.entries()]
@@ -461,8 +461,8 @@ export class GraphSDK {
     const linkIndex = this.wiki.buildLinkIndex(notes);
     const neighbors = new Map<string, GraphNeighbor>();
 
-    this.wiki.extractLinks(centerNote.content).forEach(({ link }) => {
-      const target = this.wiki.resolveLinkTarget(link, linkIndex);
+    this.wiki.extractLinks(centerNote.content).forEach((link) => {
+      const target = this.wiki.resolveLinkTarget(link, linkIndex, centerNote);
       if (!target || !selectedIds.has(target.id)) {
         return;
       }
@@ -489,7 +489,7 @@ export class GraphSDK {
       }
 
       const incomingWeight = this.wiki.extractLinks(note.content)
-        .filter(({ link }) => this.wiki.resolveLinkTarget(link, linkIndex)?.id === centerNote.id)
+        .filter((link) => this.wiki.resolveLinkTarget(link, linkIndex, note)?.id === centerNote.id)
         .length;
       if (incomingWeight === 0) {
         return;
@@ -753,8 +753,8 @@ export class GraphSDK {
         return;
       }
 
-      this.wiki.extractLinks(note.content).forEach(({ link }) => {
-        const target = this.wiki.resolveLinkTarget(link, linkIndex);
+      this.wiki.extractLinks(note.content).forEach((link) => {
+        const target = this.wiki.resolveLinkTarget(link, linkIndex, note);
         if (target && selectedIds.has(target.id)) {
           if (!nodeDrafts.has(target.id)) {
             return;
@@ -764,11 +764,11 @@ export class GraphSDK {
         }
 
         if (!target && includeDangling) {
-          const danglingId = `dangling:${link.toLowerCase()}`;
+          const danglingId = `dangling:${link.link.toLowerCase()}`;
           if (!nodeDrafts.has(danglingId)) {
             nodeDrafts.set(danglingId, {
               id: danglingId,
-              label: link,
+              label: link.link,
               type: "dangling",
               unresolved: true,
             });
@@ -827,8 +827,8 @@ export class GraphSDK {
         adjacency.set(note.id, new Set());
       }
 
-      this.wiki.extractLinks(note.content).forEach(({ link }) => {
-        const target = this.wiki.resolveLinkTarget(link, linkIndex);
+      this.wiki.extractLinks(note.content).forEach((link) => {
+        const target = this.wiki.resolveLinkTarget(link, linkIndex, note);
         if (!target) {
           return;
         }
@@ -879,8 +879,8 @@ export class GraphSDK {
         return;
       }
 
-      this.wiki.extractLinks(note.content).forEach(({ link }) => {
-        const target = this.wiki.resolveLinkTarget(link, linkIndex);
+      this.wiki.extractLinks(note.content).forEach((link) => {
+        const target = this.wiki.resolveLinkTarget(link, linkIndex, note);
         if (!target || !selectedIds.has(target.id)) {
           return;
         }
@@ -974,8 +974,8 @@ export class GraphSDK {
         return;
       }
 
-      this.wiki.extractLinks(note.content).forEach(({ link }) => {
-        const target = this.wiki.resolveLinkTarget(link, linkIndex);
+      this.wiki.extractLinks(note.content).forEach((link) => {
+        const target = this.wiki.resolveLinkTarget(link, linkIndex, note);
         if (!target || !selectedIds.has(target.id)) {
           return;
         }

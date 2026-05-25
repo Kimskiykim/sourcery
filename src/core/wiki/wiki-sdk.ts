@@ -2,6 +2,7 @@ import type { WorkspaceNote } from "../workspace/types.js";
 
 export interface WikiLink {
   link: string;
+  kind?: "wikilink" | "markdown";
 }
 
 export interface WikiMetadata {
@@ -16,6 +17,7 @@ export interface WikiLinkIndex {
 }
 
 const WIKILINK_PATTERN = /\[\[([^\]]+)\]\]/g;
+const MARKDOWN_LINK_PATTERN = /(?<!!)\[[^\]\n]*\]\(([^)\s]+(?:\s+"[^"]*")?)\)/g;
 const HASHTAG_PATTERN = /(^|[\s(])#([\p{L}\p{N}_/-]+)/gu;
 
 export class WikiSDK {
@@ -25,7 +27,14 @@ export class WikiSDK {
     for (const match of content.matchAll(WIKILINK_PATTERN)) {
       const link = match[1]?.trim();
       if (link) {
-        links.push({ link });
+        links.push({ link, kind: "wikilink" });
+      }
+    }
+
+    for (const match of content.matchAll(MARKDOWN_LINK_PATTERN)) {
+      const link = normalizeMarkdownLinkHref(match[1] ?? "");
+      if (link) {
+        links.push({ link, kind: "markdown" });
       }
     }
 
@@ -73,14 +82,18 @@ export class WikiSDK {
     };
   }
 
-  resolveLinkTarget(link: string, linkIndex: WikiLinkIndex): WorkspaceNote | null {
-    const normalizedLink = normalizeWikiLinkTarget(link);
+  resolveLinkTarget(link: WikiLink | string, linkIndex: WikiLinkIndex, sourceNote?: WorkspaceNote): WorkspaceNote | null {
+    const linkValue = typeof link === "string" ? link : link.link;
+    const linkKind = typeof link === "string" ? "wikilink" : link.kind ?? "wikilink";
+    const normalizedLink = linkKind === "markdown"
+      ? normalizeMarkdownLinkTarget(linkValue, sourceNote)
+      : normalizeWikiLinkTarget(linkValue);
     if (!normalizedLink) {
       return null;
     }
 
     if (normalizedLink.includes("/")) {
-      return linkIndex.byQualifiedPath.get(normalizedLink.toLowerCase()) ?? null;
+      return resolveQualifiedLinkTarget(normalizedLink, linkIndex);
     }
 
     const matches = linkIndex.byTitle.get(normalizedLink.toLowerCase()) ?? [];
@@ -91,7 +104,7 @@ export class WikiSDK {
     const linkIndex = this.buildLinkIndex(notes);
     return notes.filter((note) =>
       this.extractLinks(note.content).some((link) =>
-        this.resolveLinkTarget(link.link, linkIndex)?.id === target.id
+        this.resolveLinkTarget(link, linkIndex, note)?.id === target.id
       )
     );
   }
@@ -110,8 +123,8 @@ export class WikiSDK {
 
     notes.forEach((note) => {
       const outgoing: Record<string, number> = {};
-      this.extractLinks(note.content).forEach(({ link }) => {
-        const target = this.resolveLinkTarget(link, linkIndex);
+      this.extractLinks(note.content).forEach((link) => {
+        const target = this.resolveLinkTarget(link, linkIndex, note);
         if (!target) {
           return;
         }
@@ -131,6 +144,51 @@ function normalizeWikiLinkTarget(link: string): string {
     .replaceAll("\\", "/")
     .replace(/^\.\//, "")
     .replace(/\.md$/i, "");
+}
+
+function normalizeMarkdownLinkHref(href: string): string {
+  const target = href.trim().replace(/\s+"[^"]*"$/, "");
+  if (!target || !/\.md(?:$|[#?])/i.test(target)) {
+    return "";
+  }
+
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(target)) {
+    return "";
+  }
+
+  return target;
+}
+
+function normalizeMarkdownLinkTarget(link: string, sourceNote?: WorkspaceNote): string {
+  const normalizedLink = normalizeWikiLinkTarget(link)
+    .replace(/[?#].*$/, "");
+  if (!normalizedLink) {
+    return "";
+  }
+
+  if (!sourceNote || normalizedLink.startsWith("/")) {
+    return normalizedLink.replace(/^\/+/, "");
+  }
+
+  const sourceFolder = sourceNote.folderPath || sourceNote.id.split("/").slice(0, -1).join("/");
+  if (!sourceFolder || normalizedLink.startsWith("/")) {
+    return normalizeSlashPath(normalizedLink);
+  }
+
+  return normalizeSlashPath(`${sourceFolder}/${normalizedLink}`);
+}
+
+function resolveQualifiedLinkTarget(link: string, linkIndex: WikiLinkIndex): WorkspaceNote | null {
+  const key = link.toLowerCase();
+  const exact = linkIndex.byQualifiedPath.get(key);
+  if (exact) {
+    return exact;
+  }
+
+  const suffixMatches = [...linkIndex.byQualifiedPath.entries()]
+    .filter(([noteKey]) => key.endsWith(`/${noteKey}`))
+    .map(([, note]) => note);
+  return suffixMatches.length === 1 ? suffixMatches[0] ?? null : null;
 }
 
 function getQualifiedLinkKey(noteId: string): string {
